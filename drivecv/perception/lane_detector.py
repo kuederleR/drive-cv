@@ -63,6 +63,13 @@ class ClassicalLaneDetector:
 
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
         edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
+
+        if ll_mask is not None:
+            ll_road = ll_mask[y_top:y_bot, :]
+            small_ll = cv2.resize(ll_road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_NEAREST)
+            ll_edges = cv2.Canny(small_ll, 30, 100)
+            edges = cv2.bitwise_or(edges, ll_edges)
+
         lines = cv2.HoughLinesP(
             edges,
             1,
@@ -98,18 +105,18 @@ class ClassicalLaneDetector:
                 y_ref_top = float(int(h * self.config.y_top_ratio))
 
                 # 1. Left Lane Filter
-                if -65.0 <= angle <= -15.0 and mid_x < w * 0.55:
+                if -68.0 <= angle <= -12.0 and mid_x < w * 0.58:
                     xb_ref = x1 + (y_ref_bot - y1) / slope
                     xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.05 * w <= xb_ref <= 0.48 * w and 0.20 * w <= xt_ref <= 0.70 * w:
+                    if 0.02 * w <= xb_ref <= 0.50 * w and 0.15 * w <= xt_ref <= 0.72 * w:
                         length = float(np.hypot(dx, dy))
                         left_segs.append((xb_ref, xt_ref, length))
 
                 # 2. Host Right Lane Filter
-                elif 15.0 <= angle <= 65.0 and mid_x >= 0.35 * w:
+                elif 12.0 <= angle <= 68.0 and mid_x >= 0.30 * w:
                     xb_ref = x1 + (y_ref_bot - y1) / slope
                     xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.48 * w <= xb_ref <= 0.95 * w and 0.20 * w <= xt_ref <= 0.70 * w:
+                    if 0.45 * w <= xb_ref <= 0.98 * w and 0.15 * w <= xt_ref <= 0.72 * w:
                         length = float(np.hypot(dx, dy))
                         right_segs.append((xb_ref, xt_ref, length))
 
@@ -123,15 +130,15 @@ class ClassicalLaneDetector:
                 self.left_line_ema = curr
             else:
                 self.left_line_ema = (1.0 - self.config.ema_alpha) * self.left_line_ema + self.config.ema_alpha * curr
-            self.left_confidence = min(30, self.left_confidence + 2)
+            self.left_confidence = min(30.0, self.left_confidence + 3.0)
         else:
-            self.left_confidence = max(0, self.left_confidence - 1)
+            self.left_confidence = max(0.0, self.left_confidence - 1.0)
 
         # Update Right Lane EMA
         if right_segs:
             if self.left_line_ema is not None:
                 target_xb = self.left_line_ema[0] + 0.38 * w
-                weights = np.array([s[2] / (1.0 + 0.01 * abs(s[0] - target_xb)) for s in right_segs], dtype=np.float32)
+                weights = np.array([s[2] / (1.0 + 0.002 * abs(s[0] - target_xb)) for s in right_segs], dtype=np.float32)
             else:
                 weights = np.array([s[2] for s in right_segs], dtype=np.float32)
 
@@ -142,9 +149,20 @@ class ClassicalLaneDetector:
                 self.right_line_ema = curr
             else:
                 self.right_line_ema = (1.0 - self.config.ema_alpha) * self.right_line_ema + self.config.ema_alpha * curr
-            self.right_confidence = min(30, self.right_confidence + 2)
+            self.right_confidence = min(30.0, self.right_confidence + 3.0)
         else:
-            self.right_confidence = max(0, self.right_confidence - 1)
+            # Maintain right line via parallel geometry if left line is valid
+            if self.left_line_ema is not None:
+                parallel_xb = self.left_line_ema[0] + 0.38 * w
+                parallel_xt = max(self.left_line_ema[1] + 0.08 * w, self.left_line_ema[0] + 0.38 * w - (self.left_line_ema[0] - self.left_line_ema[1]))
+                parallel_curr = np.array([parallel_xb, parallel_xt], dtype=np.float32)
+                if self.right_line_ema is None:
+                    self.right_line_ema = parallel_curr
+                else:
+                    self.right_line_ema = 0.90 * self.right_line_ema + 0.10 * parallel_curr
+                self.right_confidence = max(5.0, self.right_confidence - 0.2)
+            else:
+                self.right_confidence = max(0.0, self.right_confidence - 1.0)
 
         frame_bgr = curr_bgr if curr_bgr is not None else cv2.cvtColor(curr_gray, cv2.COLOR_GRAY2BGR)
 
