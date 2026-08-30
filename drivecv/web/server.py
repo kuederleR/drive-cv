@@ -261,15 +261,42 @@ class ADASWebServer:
                     return c, "camera"
                 except Exception as e:
                     print(f"[WARNING] Live camera access failed: {e}")
-                    v_file = custom_video_path or self._current_video_path or video_path
-                    print(f"[INFO] Falling back to video file '{v_file}'...")
-                    c = ScaledVideoCapture(v_file, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
-                    return c, "video"
-            else:
-                v_file = custom_video_path or self._current_video_path or video_path
-                print(f"[INFO] Opening video recording '{v_file}'...")
+                    src_type = "video"
+
+            v_file = custom_video_path or self._current_video_path or video_path
+            print(f"[INFO] Opening video recording '{v_file}'...")
+            try:
                 c = ScaledVideoCapture(v_file, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
                 return c, "video"
+            except Exception as e:
+                print(f"[WARNING] Could not open requested video '{v_file}': {e}")
+                if v_file != video_path and os.path.exists(video_path):
+                    print(f"[INFO] Falling back to default demo video '{video_path}'...")
+                    try:
+                        self._current_video_path = video_path
+                        c = ScaledVideoCapture(video_path, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
+                        return c, "video"
+                    except Exception as e2:
+                        print(f"[ERROR] Could not open fallback demo video '{video_path}': {e2}")
+
+            # Ultimate fallback if video opening fails
+            print("[WARNING] Using camera/stub fallback...")
+            try:
+                c = ScaledVideoCapture(0, self.config.width, self.config.height)
+                return c, "camera"
+            except Exception:
+                class StubCap:
+                    fps = 30.0
+                    frame_count = 1000
+                    is_live = False
+                    width = self.config.width
+                    height = self.config.height
+                    def read(self):
+                        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                        return True, frame
+                    def release(self):
+                        pass
+                return StubCap(), "video"
 
         cap, current_src = _open_source(requested)
         with self._lock:
@@ -309,7 +336,10 @@ class ADASWebServer:
             if (pending_src and pending_src != current_src) or pending_vpath:
                 target_src = pending_src or current_src
                 print(f"[INFO] Switching input source -> '{target_src}' (file: {self._current_video_path})...")
-                cap.release()
+                try:
+                    cap.release()
+                except Exception:
+                    pass
                 self.pipeline.tracker.clear()
                 cap, current_src = _open_source(target_src, custom_video_path=self._current_video_path)
                 with self._lock:
@@ -328,43 +358,60 @@ class ADASWebServer:
                         continue
                     else:
                         print("[INFO] Reached end of video recording. Looping back to start...")
-                        cap.release()
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
                         cap, current_src = _open_source("video", custom_video_path=self._current_video_path)
                         frame_idx = 1
                         ret, frame = cap.read()
                         if not ret or frame is None:
-                            break
+                            print("[WARNING] Loop back read failed. Re-opening fallback video...")
+                            self._current_video_path = video_path
+                            cap, current_src = _open_source("video", custom_video_path=video_path)
+                            frame_idx = 1
+                            ret, frame = cap.read()
+                            if not ret or frame is None:
+                                time.sleep(0.05)
+                                continue
 
-                timestamp = frame_idx / max(1.0, video_fps)
-                proc_frame, frame_data = self.pipeline.process_frame(frame, frame_idx, timestamp)
-                self._step_frame = False
+                try:
+                    timestamp = frame_idx / max(1.0, video_fps)
+                    proc_frame, frame_data = self.pipeline.process_frame(frame, frame_idx, timestamp)
+                    self._step_frame = False
 
-                # Render panoptic visualization overlay for 2D camera feed
-                vis_frame = self.pipeline.visualizer.render(proc_frame, frame_data)
-                if self.config.visualizer.show_hud:
-                    self.pipeline.hud.draw(
-                        vis_frame, frame_data, total_frames=cap.frame_count, auto_schedule=True
-                    )
+                    # Render panoptic visualization overlay for 2D camera feed
+                    vis_frame = self.pipeline.visualizer.render(proc_frame, frame_data)
+                    if self.config.visualizer.show_hud:
+                        self.pipeline.hud.draw(
+                            vis_frame, frame_data, total_frames=cap.frame_count, auto_schedule=True
+                        )
 
-                # Encode JPEG for MJPEG stream
-                ret_jpg, encoded_jpg = cv2.imencode(".jpg", vis_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                telemetry = ADASPipeline.get_telemetry_dict(frame_data, self.pipeline.adas)
-                telemetry["active_source"] = current_src
+                    # Encode JPEG for MJPEG stream
+                    ret_jpg, encoded_jpg = cv2.imencode(".jpg", vis_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    telemetry = ADASPipeline.get_telemetry_dict(frame_data, self.pipeline.adas)
+                    telemetry["active_source"] = current_src
+                    telemetry["current_video_path"] = self._current_video_path
 
-                with self._lock:
-                    if ret_jpg:
-                        self._latest_jpeg = encoded_jpg.tobytes()
-                    self._latest_telemetry = telemetry
+                    with self._lock:
+                        if ret_jpg:
+                            self._latest_jpeg = encoded_jpg.tobytes()
+                        self._latest_telemetry = telemetry
 
-                # Broadcast telemetry via WebSocket event loop
-                if self._loop is not None and self.connected_clients:
-                    asyncio.run_coroutine_threadsafe(
-                        self._broadcast_telemetry(telemetry), self._loop
-                    )
+                    # Broadcast telemetry via WebSocket event loop
+                    if self._loop is not None and self.connected_clients:
+                        asyncio.run_coroutine_threadsafe(
+                            self._broadcast_telemetry(telemetry), self._loop
+                        )
 
-                # Advance frame
-                ret, frame = cap.read()
-                frame_idx += 1
+                    # Advance frame
+                    ret, frame = cap.read()
+                    frame_idx += 1
+                except Exception as e:
+                    print(f"[ERROR] Error processing frame {frame_idx}: {e}")
+                    time.sleep(0.05)
+                    ret, frame = cap.read()
+                    frame_idx += 1
 
                 if max_frames and frame_idx > max_frames:
                     print(f"[INFO] Reached max frame limit ({max_frames}). Stopping loop...")

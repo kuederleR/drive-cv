@@ -94,7 +94,12 @@ class ScaledVideoCapture:
 
             need_scale = (self.orig_w, self.orig_h) != (width, height)
             if use_ffmpeg and need_scale and shutil.which("ffmpeg"):
-                self._start_ffmpeg(path)
+                try:
+                    self._start_ffmpeg(path)
+                except Exception as e:
+                    print(f"[WARNING] FFmpeg process startup failed for '{path}': {e}. Using OpenCV decoder.")
+                    self._use_ffmpeg = False
+                    self._cap = cv2.VideoCapture(path)
             else:
                 self._cap = cv2.VideoCapture(path)
 
@@ -124,11 +129,25 @@ class ScaledVideoCapture:
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         if self._use_ffmpeg and self._proc is not None and self._proc.stdout is not None:
-            raw = self._proc.stdout.read(self.frame_nbytes)
-            if raw is None or len(raw) < self.frame_nbytes:
-                return False, None
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
-            return True, frame
+            try:
+                raw = self._proc.stdout.read(self.frame_nbytes)
+                if raw is not None and len(raw) == self.frame_nbytes:
+                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
+                    return True, frame
+            except Exception as e:
+                print(f"[WARNING] FFmpeg pipe read error for '{self.source}': {e}")
+
+            # If FFmpeg pipe fails or reaches EOF unexpectedly, fall back to OpenCV VideoCapture
+            print(f"[INFO] Transitioning video decoder from FFmpeg -> OpenCV for '{self.source}'...")
+            self._use_ffmpeg = False
+            if self._proc:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                self._proc = None
+            if self._cap is None:
+                self._cap = cv2.VideoCapture(str(self.source))
 
         if self._cap is None:
             return False, None
