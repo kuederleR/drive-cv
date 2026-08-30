@@ -74,14 +74,20 @@
                             <span class="card-icon">📷</span>
                             <span class="card-title">Input Video Source</span>
                         </div>
-                        <p class="card-desc">Switch active perception feed between Live USB camera and Demo video loop.</p>
-                        <div class="btn-group horizontal-group">
+                        <p class="card-desc">Switch active perception feed between Live USB camera and local dashcam recordings.</p>
+                        <div class="btn-group horizontal-group" style="margin-bottom: 10px;">
                             <button id="drawer-src-camera" class="btn btn-primary">
                                 <span class="live-dot"></span> Live Camera
                             </button>
                             <button id="drawer-src-video" class="btn btn-secondary">
-                                🎬 Demo Video
+                                🎬 Video Loop
                             </button>
+                        </div>
+                        <div class="select-container">
+                            <label for="select-recording-file" class="input-label">Dashcam Recording / Video File:</label>
+                            <select id="select-recording-file" class="custom-select">
+                                <option value="">Loading recordings...</option>
+                            </select>
                         </div>
                     </div>
 

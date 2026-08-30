@@ -134,6 +134,20 @@ docker compose -f docker-compose.jetson.yml up --build
 ```
 Access the 3D Telemetry HUD at `http://<jetson-ip>:5000`.
 
+### 3. Install Jetson Boot Systemd Service
+To automatically start the DriveCV Jetson container on boot as a system service:
+```bash
+sudo bash scripts/install_jetson_service.sh
+```
+**Service Control Commands:**
+```bash
+sudo systemctl status drivecv-jetson   # Check status
+sudo systemctl start drivecv-jetson    # Start service
+sudo systemctl stop drivecv-jetson     # Stop service
+sudo journalctl -u drivecv-jetson -f   # View live logs
+```
+To uninstall: `sudo bash scripts/uninstall_jetson_service.sh`
+
 ---
 
 ## 📹 Input Source Control: Live Camera vs. Demo Video

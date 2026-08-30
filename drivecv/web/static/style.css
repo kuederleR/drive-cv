@@ -345,6 +345,39 @@ button:active, .btn:active, .nav-btn:active {
     gap: 10px;
 }
 
+.select-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.input-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.3px;
+}
+
+.custom-select {
+    width: 100%;
+    padding: 9px 12px;
+    background-color: var(--panel-bg);
+    color: var(--text-main);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: border-color 0.15s ease;
+}
+
+.custom-select:focus {
+    border-color: var(--primary-active);
+}
+
 .card-header {
     display: flex;
     align-items: center;

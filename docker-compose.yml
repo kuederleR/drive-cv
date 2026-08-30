@@ -14,6 +14,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - CAMERA_DEVICE=/dev/video0
+      - RECORDINGS_DIR=/recordings
     volumes:
       - .:/app
+      - /home/ryan/beaterai/dashcam_app/recordings:/recordings:ro
     command: python3 main.py --host 0.0.0.0 --port 5000 --source camera --camera-device /dev/video0

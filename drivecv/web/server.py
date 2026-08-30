@@ -76,10 +76,67 @@ class ADASWebServer:
         self._step_frame = False
         self._active_source = default_source  # "camera" or "video"
         self._pending_source_change: Optional[str] = None
+        self._pending_video_path: Optional[str] = None
+        self._current_video_path: Optional[str] = None
         self.demo_video_path: Optional[str] = None
         self.camera_device = os.environ.get("CAMERA_DEVICE", "0")
 
         self._setup_routes()
+
+    def _get_available_recordings(self) -> list:
+        """Discovers local video recordings (e.g. .avi, .mp4) from Jetson dashcam recordings directory."""
+        recordings = []
+
+        if self.demo_video_path and os.path.exists(self.demo_video_path):
+            recordings.append({
+                "name": f"Demo Video ({os.path.basename(self.demo_video_path)})",
+                "path": self.demo_video_path,
+                "is_default": True,
+                "size_mb": round(os.path.getsize(self.demo_video_path) / (1024 * 1024), 1) if os.path.exists(self.demo_video_path) else 0.0
+            })
+
+        candidate_dirs = []
+        env_dir = os.environ.get("RECORDINGS_DIR")
+        if env_dir:
+            candidate_dirs.append(env_dir)
+
+        default_dashcam_dir = "/home/ryan/beaterai/dashcam_app/recordings"
+        if default_dashcam_dir not in candidate_dirs:
+            candidate_dirs.append(default_dashcam_dir)
+
+        container_recordings_dir = "/recordings"
+        if container_recordings_dir not in candidate_dirs:
+            candidate_dirs.append(container_recordings_dir)
+
+        local_rec = os.path.join(os.getcwd(), "recordings")
+        if local_rec not in candidate_dirs:
+            candidate_dirs.append(local_rec)
+
+        seen_paths = {r["path"] for r in recordings}
+        valid_exts = (".avi", ".mp4", ".mkv", ".mov")
+
+        for d in candidate_dirs:
+            if os.path.exists(d) and os.path.isdir(d):
+                try:
+                    for f in sorted(os.listdir(d)):
+                        if f.lower().endswith(valid_exts):
+                            full_p = os.path.join(d, f)
+                            if full_p not in seen_paths:
+                                seen_paths.add(full_p)
+                                try:
+                                    sz_mb = round(os.path.getsize(full_p) / (1024 * 1024), 1)
+                                except Exception:
+                                    sz_mb = 0.0
+                                recordings.append({
+                                    "name": f,
+                                    "path": full_p,
+                                    "size_mb": sz_mb,
+                                    "dir": d
+                                })
+                except Exception as e:
+                    print(f"[WARNING] Error scanning recordings dir '{d}': {e}")
+
+        return recordings
 
     def _setup_routes(self):
         @self.app.route("/")
@@ -101,6 +158,17 @@ class ADASWebServer:
                 mimetype="multipart/x-mixed-replace; boundary=frame",
             )
 
+        @self.app.route("/api/recordings", methods=["GET"])
+        def api_recordings():
+            recordings = self._get_available_recordings()
+            with self._lock:
+                current_v = self._current_video_path or self.demo_video_path
+            return jsonify({
+                "status": "ok",
+                "recordings": recordings,
+                "current_video_path": current_v,
+            })
+
         @self.app.route("/api/control", methods=["POST"])
         def api_control():
             data = request.get_json() or {}
@@ -118,17 +186,28 @@ class ADASWebServer:
             if request.method == "POST":
                 data = request.get_json() or {}
                 new_source = data.get("source")
+                target_path = data.get("video_path")
+
                 if new_source in ("camera", "video"):
                     with self._lock:
                         self._pending_source_change = new_source
-                    return jsonify({"status": "ok", "requested_source": new_source, "active_source": self._active_source})
-                return jsonify({"status": "error", "message": "Invalid source mode. Use 'camera' or 'video'."}), 400
+                        if target_path:
+                            self._pending_video_path = target_path
+                    return jsonify({
+                        "status": "ok",
+                        "requested_source": new_source,
+                        "video_path": target_path or self._current_video_path,
+                        "active_source": self._active_source
+                    })
+                return jsonify({"status": "error", "message": "Invalid source mode."}), 400
 
             with self._lock:
                 active = self._active_source
+                curr_video = self._current_video_path or self.demo_video_path
             return jsonify({
                 "status": "ok",
                 "active_source": active,
+                "current_video_path": curr_video,
                 "demo_video": self.demo_video_path,
                 "camera_device": str(self.camera_device),
             })
@@ -166,9 +245,13 @@ class ADASWebServer:
     def _pipeline_loop(self, video_path: str, max_frames: Optional[int] = None):
         """Background thread running ADAS pipeline processing."""
         self.demo_video_path = video_path
+        with self._lock:
+            if not self._current_video_path:
+                self._current_video_path = video_path
+
         requested = self._active_source
 
-        def _open_source(src_type: str):
+        def _open_source(src_type: str, custom_video_path: Optional[str] = None):
             if src_type == "camera":
                 device = os.environ.get("CAMERA_DEVICE", "0")
                 print(f"[INFO] Attempting to open Live USB Camera device '{device}'...")
@@ -178,12 +261,14 @@ class ADASWebServer:
                     return c, "camera"
                 except Exception as e:
                     print(f"[WARNING] Live camera access failed: {e}")
-                    print(f"[INFO] Falling back to demo video file '{video_path}'...")
-                    c = ScaledVideoCapture(video_path, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
+                    v_file = custom_video_path or self._current_video_path or video_path
+                    print(f"[INFO] Falling back to video file '{v_file}'...")
+                    c = ScaledVideoCapture(v_file, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
                     return c, "video"
             else:
-                print(f"[INFO] Opening Demo Video file '{video_path}'...")
-                c = ScaledVideoCapture(video_path, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
+                v_file = custom_video_path or self._current_video_path or video_path
+                print(f"[INFO] Opening video recording '{v_file}'...")
+                c = ScaledVideoCapture(v_file, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
                 return c, "video"
 
         cap, current_src = _open_source(requested)
@@ -198,7 +283,7 @@ class ADASWebServer:
         ret, frame = cap.read()
         if not ret or frame is None:
             if current_src == "camera":
-                print("[INFO] Live camera gave no initial frame. Falling back to demo video...")
+                print("[INFO] Live camera gave no initial frame. Falling back to video recording...")
                 cap.release()
                 cap, current_src = _open_source("video")
                 with self._lock:
@@ -211,16 +296,22 @@ class ADASWebServer:
         while self._running:
             t_start = time.perf_counter()
 
-            # Check for pending source change request from API
+            # Check for pending source or video path change request from API
             with self._lock:
                 pending_src = self._pending_source_change
+                pending_vpath = self._pending_video_path
                 self._pending_source_change = None
+                self._pending_video_path = None
 
-            if pending_src and pending_src != current_src:
-                print(f"[INFO] Switching input source from '{current_src}' -> '{pending_src}'...")
+            if pending_vpath:
+                self._current_video_path = pending_vpath
+
+            if (pending_src and pending_src != current_src) or pending_vpath:
+                target_src = pending_src or current_src
+                print(f"[INFO] Switching input source -> '{target_src}' (file: {self._current_video_path})...")
                 cap.release()
                 self.pipeline.tracker.clear()
-                cap, current_src = _open_source(pending_src)
+                cap, current_src = _open_source(target_src, custom_video_path=self._current_video_path)
                 with self._lock:
                     self._active_source = current_src
                 video_fps = cap.fps
@@ -236,9 +327,9 @@ class ADASWebServer:
                         ret, frame = cap.read()
                         continue
                     else:
-                        print("[INFO] Reached end of video. Looping back to start...")
+                        print("[INFO] Reached end of video recording. Looping back to start...")
                         cap.release()
-                        cap, current_src = _open_source("video")
+                        cap, current_src = _open_source("video", custom_video_path=self._current_video_path)
                         frame_idx = 1
                         ret, frame = cap.read()
                         if not ret or frame is None:

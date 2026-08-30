@@ -612,6 +612,36 @@ class DriveHUDApp {
         startHttpFallback();
     }
 
+    loadRecordings() {
+        fetch('/api/recordings')
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'ok' && data.recordings) {
+                    const select = document.getElementById('select-recording-file');
+                    if (!select) return;
+
+                    select.innerHTML = '';
+                    if (data.recordings.length === 0) {
+                        select.innerHTML = '<option value="">No recordings found</option>';
+                        return;
+                    }
+
+                    data.recordings.forEach(rec => {
+                        const opt = document.createElement('option');
+                        opt.value = rec.path;
+                        opt.textContent = rec.size_mb > 0 
+                            ? `${rec.name} (${rec.size_mb} MB)` 
+                            : rec.name;
+                        if (rec.path === data.current_video_path) {
+                            opt.selected = true;
+                        }
+                        select.appendChild(opt);
+                    });
+                }
+            })
+            .catch(err => console.error("Error loading recordings:", err));
+    }
+
     updateSourceUI(sourceType) {
         if (this.currentActiveSource === sourceType) return;
         this.currentActiveSource = sourceType;
@@ -636,11 +666,14 @@ class DriveHUDApp {
 
     initEventListeners() {
         // Source Selector Toggle Handlers
-        const setSource = (sourceType) => {
+        const setSource = (sourceType, videoPath = null) => {
+            const payload = { source: sourceType };
+            if (videoPath) payload.video_path = videoPath;
+
             fetch('/api/source', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source: sourceType })
+                body: JSON.stringify(payload)
             })
             .then(res => res.json())
             .then(data => {
@@ -655,11 +688,27 @@ class DriveHUDApp {
         const navVid = document.getElementById('btn-src-video');
         const drawerCam = document.getElementById('drawer-src-camera');
         const drawerVid = document.getElementById('drawer-src-video');
+        const selectRec = document.getElementById('select-recording-file');
 
         if (navCam) navCam.addEventListener('click', () => setSource('camera'));
         if (navVid) navVid.addEventListener('click', () => setSource('video'));
         if (drawerCam) drawerCam.addEventListener('click', () => setSource('camera'));
-        if (drawerVid) drawerVid.addEventListener('click', () => setSource('video'));
+        if (drawerVid) {
+            drawerVid.addEventListener('click', () => {
+                const selectedPath = selectRec ? selectRec.value : null;
+                setSource('video', selectedPath);
+            });
+        }
+        if (selectRec) {
+            selectRec.addEventListener('change', (e) => {
+                if (e.target.value) {
+                    setSource('video', e.target.value);
+                }
+            });
+        }
+
+        // Fetch list of recordings on init
+        this.loadRecordings();
 
         // Controls Drawer Open / Close
         const modal = document.getElementById('controls-modal');
