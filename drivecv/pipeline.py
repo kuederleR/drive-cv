@@ -273,21 +273,10 @@ class ADASPipeline:
             self.player.auto_schedule
             and self.async_worker is not None
             and not self.async_worker.is_busy
+            and self.frames_since_yolo >= self.config.detector.interval_frames
         ):
-            lane_crop = None
-            if hasattr(self.tracker, "get_lane_crop"):
-                lane_crop = self.tracker.get_lane_crop(
-                    lanes, self.config.width, self.config.height
-                )
-            if lane_crop is not None and self.frames_since_yolo >= 8:
-                self.async_worker.submit_frame(proc_frame, lane_crop)
-                self.frames_since_yolo = 0
-            elif (
-                not self.config.tracker.lead_only
-                and self.frames_since_yolo >= self.config.detector.interval_frames
-            ):
-                self.async_worker.submit_frame(proc_frame, roi_crop=None)
-                self.frames_since_yolo = 0
+            self.async_worker.submit_frame(proc_frame, roi_crop=None)
+            self.frames_since_yolo = 0
 
         t3 = time.perf_counter()
         adas_alert = self.adas.process(

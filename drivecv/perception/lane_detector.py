@@ -61,14 +61,13 @@ class ClassicalLaneDetector:
         scale_w = 640.0 / max(1, road_w)
         small_road = cv2.resize(road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_LINEAR)
 
-        blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
-        edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
-
         if ll_mask is not None:
             ll_road = ll_mask[y_top:y_bot, :]
-            small_ll = cv2.resize(ll_road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_NEAREST)
-            ll_edges = cv2.Canny(small_ll, 30, 100)
-            edges = cv2.bitwise_or(edges, ll_edges)
+            small_ll = cv2.resize(ll_road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_LINEAR)
+            small_road = cv2.addWeighted(small_road, 0.85, small_ll, 0.15, 0)
+
+        blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
+        edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
 
         lines = cv2.HoughLinesP(
             edges,
