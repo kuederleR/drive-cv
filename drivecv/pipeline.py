@@ -9,6 +9,12 @@ import time
 from typing import List, Optional, Tuple, Union
 import cv2
 import numpy as np
+
+# Suppress verbose OpenCV C++ library log messages (e.g. Corrupt JPEG data)
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+except Exception:
+    pass
 from drivecv.adas.adas_manager import ADASManager
 from drivecv.config import PipelineConfig
 from drivecv.perception.async_detector import AsyncPerceptionWorker
@@ -84,77 +90,26 @@ class ScaledVideoCapture:
         else:
             path = str(source)
             cap = cv2.VideoCapture(path)
-            if cap.isOpened():
-                self.orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or width
-                self.orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or height
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                self.fps = float(fps) if (fps and 0 < fps <= 120) else 25.0
-                self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
-            else:
-                self.orig_w, self.orig_h, self.fps, self.frame_count = width, height, 25.0, -1
-
-            if use_ffmpeg and shutil.which("ffmpeg"):
-                try:
-                    self._start_ffmpeg(path)
-                except Exception as e:
-                    print(f"[WARNING] FFmpeg pipe startup failed for '{path}': {e}. Using OpenCV decoder.")
-                    self._use_ffmpeg = False
-                    self._cap = cv2.VideoCapture(path)
-            else:
-                self._cap = cv2.VideoCapture(path)
-
-    def _start_ffmpeg(self, path: str):
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "quiet",
-            "-err_detect",
-            "ignore_err",
-            "-i",
-            path,
-            "-vf",
-            f"scale={self.width}:{self.height}",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgr24",
-            "-",
-        ]
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=self.frame_nbytes * 4,
-        )
-        self._use_ffmpeg = True
+            if not cap.isOpened():
+                raise RuntimeError(f"[ERROR] Unable to open video file: '{path}'")
+            self.orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or width
+            self.orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or height
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            self.fps = float(fps) if (fps and 0 < fps <= 120) else 25.0
+            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._cap = cap
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        if self._use_ffmpeg and self._proc is not None and self._proc.stdout is not None:
-            try:
-                raw = self._proc.stdout.read(self.frame_nbytes)
-                if raw is not None and len(raw) == self.frame_nbytes:
-                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
-                    return True, frame
-            except Exception:
-                pass
-
-            # EOF or read failure on FFmpeg pipe
-            return False, None
-
         if self._cap is None:
             return False, None
 
-        # Retry reading up to 5 times to skip corrupted/incomplete dashcam frames
-        for _ in range(5):
-            ret, frame = self._cap.read()
-            if ret and frame is not None and frame.size > 0 and frame.shape[0] >= 10 and frame.shape[1] >= 10:
-                if frame.shape[1] != self.width or frame.shape[0] != self.height:
-                    frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
-                return True, frame
+        ret, frame = self._cap.read()
+        if not ret or frame is None or frame.size == 0:
+            return False, None
 
-        return False, None
+        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        return True, frame
 
     def release(self):
         if self._proc is not None:

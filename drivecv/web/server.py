@@ -368,7 +368,7 @@ class ADASWebServer:
                         ret, frame = cap.read()
                         continue
                     else:
-                        print("[INFO] Reached end of video recording. Looping back to start...")
+                        print(f"[INFO] Reached end of video recording '{self._current_video_path}'. Looping back to start...")
                         try:
                             cap.release()
                         except Exception:
@@ -377,14 +377,8 @@ class ADASWebServer:
                         frame_idx = 1
                         ret, frame = cap.read()
                         if not ret or frame is None:
-                            print("[WARNING] Loop back read failed. Re-opening fallback video...")
-                            self._current_video_path = video_path
-                            cap, current_src = _open_source("video", custom_video_path=video_path)
-                            frame_idx = 1
-                            ret, frame = cap.read()
-                            if not ret or frame is None:
-                                time.sleep(0.05)
-                                continue
+                            time.sleep(0.05)
+                            continue
 
                 try:
                     timestamp = frame_idx / max(1.0, video_fps)
