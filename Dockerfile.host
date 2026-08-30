@@ -27,7 +27,7 @@ WORKDIR /app
 
 # Install Python requirements
 COPY requirements.txt pyproject.toml ./
-RUN pip install --no-cache-dir "numpy<2.0.0"
+RUN pip install --no-cache-dir "numpy<2.0.0" "opencv-python<4.9.0"
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir -e .
 

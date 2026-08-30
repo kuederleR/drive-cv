@@ -9,7 +9,7 @@ description = "High-Performance Autonomous Driving Perception, Tracking & ADAS S
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "opencv-python>=4.8.0",
+    "opencv-python>=4.8.0,<4.9.0",
     "numpy>=1.24.0,<2.0.0",
     "scipy>=1.8.0",
     "onnxruntime>=1.15.0",
