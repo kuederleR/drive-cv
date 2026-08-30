@@ -514,6 +514,29 @@ class DriveHUDApp {
                 progBox.classList.add('hidden');
             }
         }
+
+        // Hood Mask Control Drawer State
+        if (data.hood_mask) {
+            const hoodBtn = document.getElementById('btn-toggle-hood-mask');
+            const hoodText = document.getElementById('hood-mask-btn-text');
+            const slider = document.getElementById('slider-hood-height');
+            const valLabel = document.getElementById('val-hood-height');
+
+            if (hoodBtn && hoodText) {
+                if (data.hood_mask.enabled) {
+                    hoodBtn.className = 'btn btn-primary';
+                    hoodText.innerText = 'Enabled ✓';
+                } else {
+                    hoodBtn.className = 'btn btn-secondary';
+                    hoodText.innerText = 'Disabled';
+                }
+            }
+            if (slider && document.activeElement !== slider) {
+                const pct = Math.round(data.hood_mask.height_ratio * 100);
+                slider.value = pct;
+                if (valLabel) valLabel.innerText = `${pct}%`;
+            }
+        }
     }
 
     updateLaneBadges(leftType, rightType, isLeftWarn, isRightWarn) {
@@ -807,6 +830,48 @@ class DriveHUDApp {
                 body: JSON.stringify({ action: 'reset' })
             });
         });
+
+        // Hood Mask Controls
+        const hoodBtn = document.getElementById('btn-toggle-hood-mask');
+        const hoodText = document.getElementById('hood-mask-btn-text');
+        const hoodSlider = document.getElementById('slider-hood-height');
+        const hoodValLabel = document.getElementById('val-hood-height');
+
+        let isHoodEnabled = true;
+
+        if (hoodBtn) {
+            hoodBtn.addEventListener('click', () => {
+                isHoodEnabled = !isHoodEnabled;
+                fetch('/api/hood_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: isHoodEnabled })
+                })
+                .then(r => r.json())
+                .then(res => {
+                    if (res.status === 'ok') {
+                        hoodBtn.className = res.enabled ? 'btn btn-primary' : 'btn btn-secondary';
+                        if (hoodText) hoodText.innerText = res.enabled ? 'Enabled ✓' : 'Disabled';
+                    }
+                });
+            });
+        }
+
+        if (hoodSlider) {
+            hoodSlider.addEventListener('input', (e) => {
+                const pct = parseInt(e.target.value, 10);
+                if (hoodValLabel) hoodValLabel.innerText = `${pct}%`;
+            });
+
+            hoodSlider.addEventListener('change', (e) => {
+                const pct = parseInt(e.target.value, 10);
+                fetch('/api/hood_mask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ height_ratio: pct / 100.0 })
+                });
+            });
+        }
 
         // Responsive Resize
         window.addEventListener('resize', () => {

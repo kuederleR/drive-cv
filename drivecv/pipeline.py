@@ -318,7 +318,7 @@ class ADASPipeline:
         return proc_frame, frame_data
 
     @staticmethod
-    def get_telemetry_dict(frame_data: FrameData, adas_manager=None) -> dict:
+    def get_telemetry_dict(frame_data: FrameData, adas_manager=None, pipeline_config=None) -> dict:
         """Serializes FrameData to a JSON-compatible dictionary for web clients."""
         lanes_dict = None
         if frame_data.lanes is not None:
@@ -402,6 +402,13 @@ class ADASPipeline:
                 "total_ms": float(st.total_ms),
             }
 
+        hood_mask_dict = None
+        if pipeline_config is not None and hasattr(pipeline_config, "lane"):
+            hood_mask_dict = {
+                "enabled": bool(getattr(pipeline_config.lane, "hood_mask_enabled", True)),
+                "height_ratio": float(getattr(pipeline_config.lane, "hood_height_ratio", 0.15)),
+            }
+
         return {
             "frame_idx": int(frame_data.frame_idx),
             "timestamp": float(frame_data.timestamp),
@@ -410,6 +417,7 @@ class ADASPipeline:
             "tracks": tracks_list,
             "adas": adas_dict,
             "stage_ms": stage_ms,
+            "hood_mask": hood_mask_dict,
         }
 
 

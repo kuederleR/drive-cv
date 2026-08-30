@@ -17,11 +17,12 @@ class FastMotionAttentionGrid:
     - Aspect ratio and size gating to isolate genuine vehicles.
     """
 
-    def __init__(self, grid_w: int = 16, grid_h: int = 9, thumb_w: int = 320, thumb_h: int = 180):
+    def __init__(self, grid_w: int = 16, grid_h: int = 9, thumb_w: int = 320, thumb_h: int = 180, hood_height_ratio: float = 0.15):
         self.grid_w = grid_w
         self.grid_h = grid_h
         self.thumb_w = thumb_w
         self.thumb_h = thumb_h
+        self.hood_height_ratio = hood_height_ratio
         self.prev_frames: List[np.ndarray] = []
 
     def update_and_get_attention_rois(self, gray_or_bgr: np.ndarray) -> List[BoundingBox]:
@@ -46,9 +47,10 @@ class FastMotionAttentionGrid:
         d2 = cv2.absdiff(self.prev_frames[1], self.prev_frames[0])
         motion = cv2.bitwise_and(d1, d2)
 
-        # Zero out sky/lamp posts (top 45%) and hood (bottom 10%)
+        # Zero out sky/lamp posts (top 45%) and hood (bottom hood_height_ratio)
+        hood_y = int(self.thumb_h * min(0.90, max(0.60, 1.0 - self.hood_height_ratio)))
         motion[: int(self.thumb_h * 0.45), :] = 0
-        motion[int(self.thumb_h * 0.90) :, :] = 0
+        motion[hood_y:, :] = 0
 
         # Compute energy grid
         _, m_bin = cv2.threshold(motion, 8, 255, cv2.THRESH_BINARY)

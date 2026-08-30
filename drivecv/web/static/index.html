@@ -192,6 +192,30 @@
                             🔄 Reset to Default Calibration
                         </button>
                     </div>
+
+                    <!-- Hood Masking Control Card -->
+                    <div class="control-card">
+                        <div class="card-header">
+                            <span class="card-icon">🚘</span>
+                            <span class="card-title">Vehicle Hood Masking</span>
+                        </div>
+                        <p class="card-desc">Mask out lower portion of camera frame containing vehicle hood to prevent false edge and tracking detections.</p>
+                        
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                            <span class="input-label" style="margin: 0;">Hood Mask Active:</span>
+                            <button id="btn-toggle-hood-mask" class="btn btn-primary" style="padding: 6px 14px;">
+                                <span id="hood-mask-btn-text">Enabled ✓</span>
+                            </button>
+                        </div>
+
+                        <div class="slider-container" style="margin-top: 10px;">
+                            <div style="display: flex; justify-content: space-between; font-size: 13px; color: #a0a5b5; margin-bottom: 4px;">
+                                <label for="slider-hood-height">Hood Height Cutoff:</label>
+                                <span id="val-hood-height">15%</span>
+                            </div>
+                            <input type="range" id="slider-hood-height" min="0" max="35" step="1" value="15" style="width: 100%; accent-color: #88c0d0;">
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

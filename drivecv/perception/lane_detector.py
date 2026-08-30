@@ -37,8 +37,24 @@ class ClassicalLaneDetector:
     ) -> LaneBoundaries:
         """Updates host lane boundary estimates and drivable corridor."""
         h, w = curr_gray.shape[:2]
-        y_top = int(h * self.config.y_top_ratio)
-        y_bot = int(h * self.config.y_bot_ratio)
+        if getattr(self.config, "hood_mask_enabled", True):
+            hood_ratio = getattr(self.config, "hood_height_ratio", 0.15)
+            effective_y_bot_ratio = min(self.config.y_bot_ratio, max(0.40, 1.0 - hood_ratio))
+        else:
+            effective_y_bot_ratio = self.config.y_bot_ratio
+
+        y_bot = int(h * effective_y_bot_ratio)
+        y_top = int(h * min(self.config.y_top_ratio, effective_y_bot_ratio - 0.08))
+        y_top = max(0, y_top)
+
+        if da_mask is not None and getattr(self.config, "hood_mask_enabled", True):
+            hood_cutoff = int(h * (1.0 - getattr(self.config, "hood_height_ratio", 0.15)))
+            da_mask = da_mask.copy()
+            da_mask[hood_cutoff:, :] = 0
+        if ll_mask is not None and getattr(self.config, "hood_mask_enabled", True):
+            hood_cutoff = int(h * (1.0 - getattr(self.config, "hood_height_ratio", 0.15)))
+            ll_mask = ll_mask.copy()
+            ll_mask[hood_cutoff:, :] = 0
 
         road = curr_gray[y_top:y_bot, :]
         road_h, road_w = road.shape

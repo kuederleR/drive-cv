@@ -224,6 +224,21 @@ class ADASWebServer:
             calib = self.pipeline.adas.ldw.get_calibration_dict()
             return jsonify({"status": "ok", "calibration": calib})
 
+        @self.app.route("/api/hood_mask", methods=["GET", "POST"])
+        def api_hood_mask():
+            if request.method == "POST":
+                data = request.get_json() or {}
+                if "enabled" in data:
+                    self.pipeline.config.lane.hood_mask_enabled = bool(data["enabled"])
+                if "height_ratio" in data:
+                    ratio = float(data["height_ratio"])
+                    self.pipeline.config.lane.hood_height_ratio = max(0.0, min(0.40, ratio))
+            return jsonify({
+                "status": "ok",
+                "enabled": bool(self.pipeline.config.lane.hood_mask_enabled),
+                "height_ratio": float(self.pipeline.config.lane.hood_height_ratio),
+            })
+
         @self.app.route("/api/telemetry")
         def api_telemetry():
             with self._lock:
@@ -394,7 +409,7 @@ class ADASWebServer:
 
                     # Encode JPEG for MJPEG stream
                     ret_jpg, encoded_jpg = cv2.imencode(".jpg", vis_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    telemetry = ADASPipeline.get_telemetry_dict(frame_data, self.pipeline.adas)
+                    telemetry = ADASPipeline.get_telemetry_dict(frame_data, self.pipeline.adas, self.pipeline.config)
                     telemetry["active_source"] = current_src
                     telemetry["current_video_path"] = self._current_video_path
 

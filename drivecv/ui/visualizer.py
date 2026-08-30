@@ -98,6 +98,9 @@ class PanopticVisualizer:
                 if lanes.right_confidence > 0.10:
                     cv2.polylines(frame, [pts_right], False, self.config.lane_color, 2, cv2.LINE_AA)
 
+                # Hood cutoff line
+                cv2.line(frame, (0, y_bot), (w, y_bot), (80, 80, 80), 1, cv2.LINE_AA)
+
     def _draw_track(
         self,
         frame: np.ndarray,
