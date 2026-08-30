@@ -244,10 +244,10 @@ class ADASWebServer:
 
     def _pipeline_loop(self, video_path: str, max_frames: Optional[int] = None):
         """Background thread running ADAS pipeline processing."""
-        self.demo_video_path = video_path
+        self.demo_video_path = os.path.abspath(video_path)
         with self._lock:
             if not self._current_video_path:
-                self._current_video_path = video_path
+                self._current_video_path = self.demo_video_path
 
         requested = self._active_source
 
@@ -263,40 +263,51 @@ class ADASWebServer:
                     print(f"[WARNING] Live camera access failed: {e}")
                     src_type = "video"
 
-            v_file = custom_video_path or self._current_video_path or video_path
+            v_file = custom_video_path or self._current_video_path or self.demo_video_path
+            if v_file and os.path.exists(os.path.abspath(v_file)):
+                v_file = os.path.abspath(v_file)
+
             print(f"[INFO] Opening video recording '{v_file}'...")
             try:
                 c = ScaledVideoCapture(v_file, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
                 return c, "video"
             except Exception as e:
                 print(f"[WARNING] Could not open requested video '{v_file}': {e}")
-                if v_file != video_path and os.path.exists(video_path):
-                    print(f"[INFO] Falling back to default demo video '{video_path}'...")
+                # Try any available recording discovered on host
+                recs = self._get_available_recordings()
+                for rec in recs:
+                    if rec["path"] != v_file and os.path.exists(rec["path"]):
+                        try:
+                            print(f"[INFO] Trying alternative discovered recording '{rec['path']}'...")
+                            self._current_video_path = rec["path"]
+                            c = ScaledVideoCapture(rec["path"], self.config.width, self.config.height)
+                            return c, "video"
+                        except Exception:
+                            pass
+
+                if v_file != self.demo_video_path and os.path.exists(self.demo_video_path):
+                    print(f"[INFO] Falling back to default demo video '{self.demo_video_path}'...")
                     try:
-                        self._current_video_path = video_path
-                        c = ScaledVideoCapture(video_path, self.config.width, self.config.height, use_ffmpeg=self.config.use_ffmpeg_scale)
+                        self._current_video_path = self.demo_video_path
+                        c = ScaledVideoCapture(self.demo_video_path, self.config.width, self.config.height)
                         return c, "video"
                     except Exception as e2:
-                        print(f"[ERROR] Could not open fallback demo video '{video_path}': {e2}")
+                        print(f"[ERROR] Could not open fallback demo video '{self.demo_video_path}': {e2}")
 
             # Ultimate fallback if video opening fails
-            print("[WARNING] Using camera/stub fallback...")
-            try:
-                c = ScaledVideoCapture(0, self.config.width, self.config.height)
-                return c, "camera"
-            except Exception:
-                class StubCap:
-                    fps = 30.0
-                    frame_count = 1000
-                    is_live = False
-                    width = self.config.width
-                    height = self.config.height
-                    def read(self):
-                        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                        return True, frame
-                    def release(self):
-                        pass
-                return StubCap(), "video"
+            print("[WARNING] Using stub frame generator fallback...")
+            class StubCap:
+                fps = 30.0
+                frame_count = 1000
+                is_live = False
+                width = self.config.width
+                height = self.config.height
+                def read(self):
+                    frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                    return True, frame
+                def release(self):
+                    pass
+            return StubCap(), "video"
 
         cap, current_src = _open_source(requested)
         with self._lock:

@@ -83,76 +83,17 @@ class ScaledVideoCapture:
             self._cap = cap
         else:
             path = str(source)
-            probe = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
-            if not probe.isOpened():
-                probe = cv2.VideoCapture(path)
-            if not probe.isOpened():
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
                 raise RuntimeError(f"[ERROR] Unable to open video file: '{path}'")
-            self.orig_w = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
-            self.orig_h = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.fps = float(probe.get(cv2.CAP_PROP_FPS) or 25.0)
-            self.frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
-            probe.release()
-
-            need_scale = (self.orig_w, self.orig_h) != (width, height)
-            if use_ffmpeg and need_scale and shutil.which("ffmpeg"):
-                try:
-                    self._start_ffmpeg(path)
-                except Exception as e:
-                    print(f"[WARNING] FFmpeg process startup failed for '{path}': {e}. Using OpenCV decoder.")
-                    self._use_ffmpeg = False
-                    self._cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
-            else:
-                self._cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
-
-    def _start_ffmpeg(self, path: str):
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "quiet",
-            "-err_detect",
-            "ignore_err",
-            "-i",
-            path,
-            "-vf",
-            f"scale={self.width}:{self.height}",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgr24",
-            "-",
-        ]
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=self.frame_nbytes * 8,
-        )
-        self._use_ffmpeg = True
+            self.orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            self.fps = float(fps) if (fps and 0 < fps <= 120) else 25.0
+            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._cap = cap
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        if self._use_ffmpeg and self._proc is not None and self._proc.stdout is not None:
-            try:
-                raw = self._proc.stdout.read(self.frame_nbytes)
-                if raw is not None and len(raw) == self.frame_nbytes:
-                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
-                    return True, frame
-            except Exception as e:
-                print(f"[WARNING] FFmpeg pipe read error for '{self.source}': {e}")
-
-            # If FFmpeg pipe fails or reaches EOF unexpectedly, fall back to OpenCV VideoCapture
-            print(f"[INFO] Transitioning video decoder from FFmpeg -> OpenCV for '{self.source}'...")
-            self._use_ffmpeg = False
-            if self._proc:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
-                self._proc = None
-            if self._cap is None:
-                self._cap = cv2.VideoCapture(str(self.source), cv2.CAP_FFMPEG)
-
         if self._cap is None:
             return False, None
 
@@ -168,15 +109,20 @@ class ScaledVideoCapture:
 
     def release(self):
         if self._proc is not None:
-            self._proc.kill()
             try:
-                self._proc.wait(timeout=1.0)
+                self._proc.kill()
+                self._proc.wait(timeout=0.5)
             except Exception:
                 pass
             self._proc = None
         if self._cap is not None:
-            self._cap.release()
+            try:
+                self._cap.release()
+            except Exception:
+                pass
             self._cap = None
+            if self.is_live:
+                time.sleep(0.15)  # Allow V4L2 camera kernel driver to release handle
 
 
 class ADASPipeline:
