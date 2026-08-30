@@ -3,7 +3,7 @@
 # Optimized for Jetson CUDA Acceleration, USB UVC Camera & 3D HUD Web Suite
 # ==============================================================================
 
-FROM nvcr.io/nvidia/l4t-pytorch:r35.4.1-pth2.0-py3
+FROM nvcr.io/nvidia/pytorch:24.05-py3-igpu
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive

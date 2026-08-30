@@ -128,7 +128,7 @@ docker compose up --build
 Access the 3D Telemetry HUD at `http://localhost:5000`.
 
 ### 2. Nvidia Jetson Orin Nano Super Docker Deployment
-Targeted deployment for Nvidia Jetson Orin Nano Super (ARM64 / JetPack) with Jetson CUDA runtime and USB UVC camera access (`/dev/video0`):
+Targeted deployment for Nvidia Jetson Orin Nano Super (ARM64 / JetPack) utilizing `nvcr.io/nvidia/pytorch:24.05-py3-igpu` with Jetson CUDA runtime and USB UVC camera access (`/dev/video0`):
 ```bash
 docker compose -f docker-compose.jetson.yml up --build
 ```

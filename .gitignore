@@ -1,0 +1,5 @@
+.venv/
+libs/
+*.mp4
+weights/
+*.onnx
