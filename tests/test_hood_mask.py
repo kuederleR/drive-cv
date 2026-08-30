@@ -15,7 +15,7 @@ class TestHoodMask(unittest.TestCase):
 
     def test_lane_config_defaults(self):
         config = LaneConfig()
-        self.assertFalse(config.hood_mask_enabled)
+        self.assertTrue(config.hood_mask_enabled)
         self.assertAlmostEqual(config.hood_height_ratio, 0.20)
 
     def test_classical_lane_detector_hood_mask(self):
@@ -52,7 +52,7 @@ class TestHoodMask(unittest.TestCase):
         res_get = client.get("/api/hood_mask")
         self.assertEqual(res_get.status_code, 200)
         data_get = res_get.get_json()
-        self.assertFalse(data_get["enabled"])
+        self.assertTrue(data_get["enabled"])
         self.assertAlmostEqual(data_get["height_ratio"], 0.20)
 
         # POST /api/hood_mask (update parameters)

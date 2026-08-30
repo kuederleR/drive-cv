@@ -105,18 +105,18 @@ class ClassicalLaneDetector:
                 y_ref_top = float(int(h * self.config.y_top_ratio))
 
                 # 1. Left Lane Filter
-                if -68.0 <= angle <= -12.0 and mid_x < w * 0.58:
+                if -68.0 <= angle <= -12.0 and mid_x < w * 0.55:
                     xb_ref = x1 + (y_ref_bot - y1) / slope
                     xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.02 * w <= xb_ref <= 0.50 * w and 0.15 * w <= xt_ref <= 0.72 * w:
+                    if 0.05 * w <= xb_ref <= 0.46 * w and 0.25 * w <= xt_ref <= 0.54 * w:
                         length = float(np.hypot(dx, dy))
                         left_segs.append((xb_ref, xt_ref, length))
 
                 # 2. Host Right Lane Filter
-                elif 12.0 <= angle <= 68.0 and mid_x >= 0.30 * w:
+                elif 12.0 <= angle <= 68.0 and mid_x >= 0.35 * w:
                     xb_ref = x1 + (y_ref_bot - y1) / slope
                     xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.45 * w <= xb_ref <= 0.98 * w and 0.15 * w <= xt_ref <= 0.72 * w:
+                    if 0.52 * w <= xb_ref <= 0.92 * w and 0.42 * w <= xt_ref <= 0.58 * w:
                         length = float(np.hypot(dx, dy))
                         right_segs.append((xb_ref, xt_ref, length))
 
@@ -151,15 +151,15 @@ class ClassicalLaneDetector:
                 self.right_line_ema = (1.0 - self.config.ema_alpha) * self.right_line_ema + self.config.ema_alpha * curr
             self.right_confidence = min(30.0, self.right_confidence + 3.0)
         else:
-            # Maintain right line via parallel geometry if left line is valid
+            # Maintain right line via true parallel perspective geometry if left line is valid
             if self.left_line_ema is not None:
                 parallel_xb = self.left_line_ema[0] + 0.38 * w
-                parallel_xt = max(self.left_line_ema[1] + 0.08 * w, self.left_line_ema[0] + 0.38 * w - (self.left_line_ema[0] - self.left_line_ema[1]))
+                parallel_xt = self.left_line_ema[1] + 0.08 * w
                 parallel_curr = np.array([parallel_xb, parallel_xt], dtype=np.float32)
                 if self.right_line_ema is None:
                     self.right_line_ema = parallel_curr
                 else:
-                    self.right_line_ema = 0.90 * self.right_line_ema + 0.10 * parallel_curr
+                    self.right_line_ema = 0.85 * self.right_line_ema + 0.15 * parallel_curr
                 self.right_confidence = max(5.0, self.right_confidence - 0.2)
             else:
                 self.right_confidence = max(0.0, self.right_confidence - 1.0)
@@ -207,16 +207,19 @@ class ClassicalLaneDetector:
         if left_valid and not right_valid:
             left_bot, left_top = map_ref_line(self.left_line_ema)
             right_bot = left_bot + 0.38 * w
-            right_top = max(left_top + 0.08 * w, left_bot + 0.38 * w - (left_bot - left_top))
+            right_top = left_top + 0.08 * w
         elif right_valid and not left_valid:
             right_bot, right_top = map_ref_line(self.right_line_ema)
             left_bot = right_bot - 0.38 * w
-            left_top = min(right_top - 0.08 * w, right_bot - 0.38 * w + (right_bot - right_top))
+            left_top = right_top - 0.08 * w
         else:
             left_bot, left_top = map_ref_line(self.left_line_ema)
             right_bot, right_top = map_ref_line(self.right_line_ema)
 
-        right_bot = max(left_bot + 0.25 * w, right_bot)
+        # Strictly enforce perspective lane convergence sanity:
+        # right_top must be near left_top near the vanishing horizon and never flare outward
+        right_top = max(left_top + 0.03 * w, min(left_top + 0.20 * w, right_top))
+        right_bot = max(left_bot + 0.25 * w, min(left_bot + 0.50 * w, right_bot))
 
         # 1. Compute intersection crossing point (vanishing point)
         dx_l = left_top - left_bot

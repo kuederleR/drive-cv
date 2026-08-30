@@ -72,7 +72,7 @@ class LaneConfig:
     """Configuration for classical host lane line and drivable corridor estimation."""
     y_top_ratio: float = 0.58
     y_bot_ratio: float = 0.95
-    hood_mask_enabled: bool = False
+    hood_mask_enabled: bool = True
     hood_height_ratio: float = 0.20  # Fraction of image height at bottom occupied by hood (0.0 to 0.40)
     ema_alpha: float = 0.20
     path_width_ratio: float = 0.80
