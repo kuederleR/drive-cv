@@ -31,14 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy requirement manifests and install Python dependencies
-COPY requirements.txt pyproject.toml ./
-RUN pip3 install --no-cache-dir "numpy<2.0.0" "opencv-python<4.9.0"
-RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install --no-cache-dir -e .
+# Remove any PyPI opencv wheels to preserve NVIDIA container's CUDA/GStreamer OpenCV
+RUN pip3 uninstall -y opencv-python opencv-python-headless || true
+RUN pip3 install --no-cache-dir "numpy<2.0.0" scipy onnxruntime flask websockets
 
-# Copy application codebase and ONNX model weights
+# Copy application codebase and install package without overwriting native OpenCV
 COPY . /app
+RUN pip3 install --no-cache-dir --no-deps -e .
 
 # Download YOLOPv2 ONNX model weights if missing
 RUN python3 scripts/download_weights.py
