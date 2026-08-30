@@ -33,6 +33,7 @@ WORKDIR /app
 
 # Copy requirement manifests and install Python dependencies
 COPY requirements.txt pyproject.toml ./
+RUN pip3 install --no-cache-dir "numpy<2.0.0"
 RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 install --no-cache-dir -e .
 
