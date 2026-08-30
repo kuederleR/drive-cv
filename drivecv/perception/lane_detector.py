@@ -96,6 +96,10 @@ class ClassicalLaneDetector:
                 if abs(dx) < 1e-3 or abs(dy) < 1e-3:
                     continue
 
+                length = float(np.hypot(dx, dy))
+                if length < float(self.config.hough_min_line_length):
+                    continue
+
                 slope = dy / dx
                 angle = float(np.degrees(np.arctan(slope)))
                 mid_x = (x1 + x2) / 2.0
@@ -112,10 +116,12 @@ class ClassicalLaneDetector:
                         left_segs.append((xb_ref, xt_ref, length))
 
                 # 2. Host Right Lane Filter
-                elif 12.0 <= angle <= 68.0 and mid_x >= 0.35 * w:
+                elif 12.0 <= angle <= 68.0 and mid_x >= 0.45 * w:
                     xb_ref = x1 + (y_ref_bot - y1) / slope
                     xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.52 * w <= xb_ref <= 0.92 * w and 0.42 * w <= xt_ref <= 0.58 * w:
+                    min_right_xb = (self.left_line_ema[0] + 0.34 * w) if self.left_line_ema is not None else 0.58 * w
+                    max_right_xb = (self.left_line_ema[0] + 0.48 * w) if self.left_line_ema is not None else 0.92 * w
+                    if min_right_xb <= xb_ref <= max_right_xb and 0.42 * w <= xt_ref <= 0.58 * w:
                         length = float(np.hypot(dx, dy))
                         right_segs.append((xb_ref, xt_ref, length))
 
@@ -137,12 +143,17 @@ class ClassicalLaneDetector:
         if right_segs:
             if self.left_line_ema is not None:
                 target_xb = self.left_line_ema[0] + 0.38 * w
-                weights = np.array([s[2] / (1.0 + 0.002 * abs(s[0] - target_xb)) for s in right_segs], dtype=np.float32)
+                weights = np.array([s[2] / (1.0 + 0.015 * abs(s[0] - target_xb)) for s in right_segs], dtype=np.float32)
             else:
                 weights = np.array([s[2] for s in right_segs], dtype=np.float32)
 
             xb = float(np.average([s[0] for s in right_segs], weights=weights))
             xt = float(np.average([s[1] for s in right_segs], weights=weights))
+
+            if self.left_line_ema is not None:
+                xb = max(self.left_line_ema[0] + 0.34 * w, min(self.left_line_ema[0] + 0.48 * w, xb))
+                xt = max(self.left_line_ema[1] + 0.04 * w, min(self.left_line_ema[1] + 0.16 * w, xt))
+
             curr = np.array([xb, xt], dtype=np.float32)
             if self.right_line_ema is None:
                 self.right_line_ema = curr
@@ -217,8 +228,8 @@ class ClassicalLaneDetector:
 
         # Strictly enforce perspective lane convergence sanity:
         # right_top must be near left_top near the vanishing horizon and never flare outward
-        right_top = max(left_top + 0.03 * w, min(left_top + 0.20 * w, right_top))
-        right_bot = max(left_bot + 0.25 * w, min(left_bot + 0.50 * w, right_bot))
+        right_top = max(left_top + 0.04 * w, min(left_top + 0.16 * w, right_top))
+        right_bot = max(left_bot + 0.34 * w, min(left_bot + 0.48 * w, right_bot))
 
         # 1. Compute intersection crossing point (vanishing point)
         dx_l = left_top - left_bot
