@@ -3,7 +3,7 @@ High-speed host-lane tracker: mask-seeded quadratic Kalman with Canny
 narrow-band updates and symmetric Hough cold-start (target <2 ms / frame).
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import cv2
 import numpy as np
 from drivecv.config import LaneConfig
