@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DriveCV 3D Ego-Lane & ADAS HUD</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/three.min.js"></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+    <div id="app-container">
+        <!-- 3D Canvas Container -->
+        <div id="canvas-container"></div>
+
+        <!-- Clean Top Navigation Bar -->
+        <header id="top-nav">
+            <div class="brand">
+                <span class="logo-icon">🚘</span>
+                <span class="logo-text">DriveCV 3D</span>
+            </div>
+
+            <!-- Dynamic Road Lane Line Type Badges -->
+            <div id="lane-type-display" class="lane-type-display">
+                <div id="left-lane-pill" class="lane-pill pill-yellow">LEFT: SOLID YELLOW</div>
+                <div id="right-lane-pill" class="lane-pill pill-white">RIGHT: SOLID WHITE</div>
+            </div>
+
+            <div class="nav-right">
+                <!-- Input Video Source Selector Toggle -->
+                <div id="source-selector" class="source-selector">
+                    <button id="btn-src-camera" class="source-btn active" title="Switch to Live USB UVC Camera">
+                        <span class="live-dot"></span> Live Camera
+                    </button>
+                    <button id="btn-src-video" class="source-btn" title="Switch to Demo Video File">
+                        <span>🎬</span> Demo Video
+                    </button>
+                </div>
+
+                <div id="status-pill" class="status-pill disconnected">
+                    <span class="dot"></span>
+                    <span id="status-text">OFFLINE</span>
+                </div>
+                <button id="btn-open-controls" class="nav-btn">
+                    <span>⚙️</span> Controls
+                </button>
+            </div>
+        </header>
+
+        <!-- Minimalist Warning Alert Banner (Pops up on active LDW / FCW alerts) -->
+        <div id="alert-container">
+            <div id="ldw-alert" class="alert-banner ldw-alert hidden">
+                <span class="alert-icon">⚠️</span>
+                <span id="ldw-text">LANE DEPARTURE</span>
+            </div>
+            <div id="fcw-alert" class="alert-banner fcw-alert hidden">
+                <span class="alert-icon">🚨</span>
+                <span id="fcw-text">FORWARD COLLISION WARNING</span>
+            </div>
+        </div>
+
+        <!-- Picture-in-Picture 2D Camera Feed Overlay -->
+        <div id="video-overlay" class="hidden">
+            <div class="video-header">
+                <span>2D Perception Feed</span>
+                <button id="btn-close-video" class="close-btn">×</button>
+            </div>
+            <img id="mjpeg-stream" src="/video_feed" alt="Live Camera Feed">
+        </div>
+
+        <!-- Scrollable System Controls & Calibration Drawer -->
+        <div id="controls-modal" class="modal-backdrop hidden">
+            <div id="controls-drawer">
+                <div class="drawer-header">
+                    <h2>System Controls & Calibration</h2>
+                    <button id="btn-close-controls" class="close-btn">×</button>
+                </div>
+
+                <div class="drawer-body">
+                    <!-- Source Control Card -->
+                    <div class="control-card">
+                        <div class="card-header">
+                            <span class="card-icon">📷</span>
+                            <span class="card-title">Input Video Source</span>
+                        </div>
+                        <p class="card-desc">Switch active perception feed between Live USB camera and Demo video loop.</p>
+                        <div class="btn-group horizontal-group">
+                            <button id="drawer-src-camera" class="btn btn-primary">
+                                <span class="live-dot"></span> Live Camera
+                            </button>
+                            <button id="drawer-src-video" class="btn btn-secondary">
+                                🎬 Demo Video
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Audio Controls -->
+                    <div class="control-card">
+                        <div class="card-header">
+                            <span class="card-icon">🔊</span>
+                            <span class="card-title">Audio Warnings</span>
+                        </div>
+                        <p class="card-desc">Synthesize directional LDW chimes and emergency FCW audio cues.</p>
+                        <button id="audio-toggle" class="btn btn-primary">
+                            <span id="audio-btn-text">Enable Warning Audio</span>
+                        </button>
+                    </div>
+
+                    <!-- Video Overlay Controls -->
+                    <div class="control-card">
+                        <div class="card-header">
+                            <span class="card-icon">📹</span>
+                            <span class="card-title">Camera Feed</span>
+                        </div>
+                        <p class="card-desc">Toggle picture-in-picture 2D camera feed with detection masks.</p>
+                        <button id="view-toggle" class="btn btn-secondary">
+                            Toggle 2D Camera Overlay
+                        </button>
+                    </div>
+
+                    <!-- Playback Controls -->
+                    <div class="control-card">
+                        <div class="card-header">
+                            <span class="card-icon">⏯️</span>
+                            <span class="card-title">Playback & Camera</span>
+                        </div>
+                        <div class="btn-group">
+                            <button id="btn-play-pause" class="btn btn-secondary">
+                                <span id="play-icon">⏸️</span> Play / Pause
+                            </button>
+                            <button id="btn-step" class="btn btn-secondary">
+                                ⏭️ Step Frame
+                            </button>
+                            <button id="btn-reset-cam" class="btn btn-secondary">
+                                🎥 Reset Camera
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Lane Line & Wheel Calibration -->
+                    <div class="control-card calibration-card">
+                        <div class="card-header">
+                            <span class="card-icon">🎯</span>
+                            <span class="card-title">Ego Vehicle & Lane Line Calibration</span>
+                        </div>
+                        <p class="card-desc">
+                            Drive vehicle edge on the target lane line and click calibrate.
+                            The system will record line position for 3 seconds to store vehicle wheel offset.
+                        </p>
+
+                        <div class="calibration-actions">
+                            <button id="btn-calib-left" class="btn btn-calib">
+                                🎯 Calibrate Left Edge
+                            </button>
+                            <button id="btn-calib-right" class="btn btn-calib">
+                                🎯 Calibrate Right Edge
+                            </button>
+                        </div>
+
+                        <!-- Calibration Progress Bar -->
+                        <div id="calib-progress-box" class="progress-box hidden">
+                            <div class="progress-label">
+                                <span id="calib-status-msg">Calibrating...</span>
+                                <span id="calib-pct-text">0%</span>
+                            </div>
+                            <div class="progress-bar-bg">
+                                <div id="calib-progress-bar" class="progress-bar-fill"></div>
+                            </div>
+                        </div>
+
+                        <!-- Active Calibration Values -->
+                        <div class="calibration-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">Left Wheel Edge:</span>
+                                <span id="val-calib-left" class="stat-val">-0.95 m</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Right Wheel Edge:</span>
+                                <span id="val-calib-right" class="stat-val">+0.95 m</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Vehicle Width:</span>
+                                <span id="val-calib-width" class="stat-val">1.90 m</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Camera Bias:</span>
+                                <span id="val-calib-bias" class="stat-val">0.00 m</span>
+                            </div>
+                        </div>
+
+                        <button id="btn-reset-calib" class="btn btn-outline-danger">
+                            🔄 Reset to Default Calibration
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

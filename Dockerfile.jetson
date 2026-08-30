@@ -1,0 +1,53 @@
+# ==============================================================================
+# DriveCV - NVIDIA Jetson Orin Nano Super Dockerfile (ARM64 / JetPack)
+# Optimized for Jetson CUDA Acceleration, USB UVC Camera & 3D HUD Web Suite
+# ==============================================================================
+
+FROM nvcr.io/nvidia/l4t-pytorch:r35.4.1-pth2.0-py3
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV OPENBLAS_CORETYPE=ARMV8
+ENV CAMERA_DEVICE=/dev/video0
+
+# Install ARM64 / Jetson system dependencies and multimedia libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    v4l-utils \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libopenblas-dev \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirement manifests and install Python dependencies
+COPY requirements.txt pyproject.toml ./
+RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -e .
+
+# Copy application codebase and ONNX model weights
+COPY . /app
+
+# Download YOLOPv2 ONNX model weights if missing
+RUN python3 scripts/download_weights.py
+
+# Expose HTTP Web Server (5000) & WebSocket Telemetry Server (5001)
+EXPOSE 5000 5001
+
+# Healthcheck for Web Server endpoint
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:5000/api/source || exit 1
+
+# Default execution: Launch web server with Live USB UVC camera default on Jetson
+CMD ["python3", "main.py", "--host", "0.0.0.0", "--port", "5000", "--source", "camera", "--camera-device", "/dev/video0"]

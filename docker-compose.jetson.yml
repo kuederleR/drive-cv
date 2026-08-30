@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  drivecv-jetson:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+    container_name: drivecv-jetson-app
+    restart: unless-stopped
+    runtime: nvidia
+    privileged: true
+    network_mode: host
+    ipc: host
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    devices:
+      - "/dev/video0:/dev/video0"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENBLAS_CORETYPE=ARMV8
+      - CAMERA_DEVICE=/dev/video0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - .:/app
+    command: python3 main.py --host 0.0.0.0 --port 5000 --source camera --camera-device /dev/video0

@@ -1,0 +1,47 @@
+# ==============================================================================
+# DriveCV - Host Linux Machine Dockerfile (x86_64)
+# High-Performance Autonomous Driving Perception, Tracking & 3D HUD ADAS Suite
+# ==============================================================================
+
+FROM python:3.10-slim-bullseye
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CAMERA_DEVICE=/dev/video0
+
+# Install Linux system dependencies (FFmpeg, OpenCV GUI libs, V4L2 USB camera utilities)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    v4l-utils \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python requirements
+COPY requirements.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -e .
+
+# Copy application source code and weights
+COPY . /app
+
+# Download YOLOPv2 ONNX model weights if missing
+RUN python3 scripts/download_weights.py
+
+# Expose HTTP Web UI (5000) and WebSocket Telemetry (5001)
+EXPOSE 5000 5001
+
+# Healthcheck for Web Server endpoint
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:5000/api/source || exit 1
+
+# Default execution: Launch web server with Live USB UVC camera as default
+CMD ["python3", "main.py", "--host", "0.0.0.0", "--port", "5000", "--source", "camera", "--camera-device", "/dev/video0"]
