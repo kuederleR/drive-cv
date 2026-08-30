@@ -409,66 +409,6 @@ class LaneRibbonRenderer {
     }
 }
 
-    buildRibbonMesh(group, xOffset, curvature, material, width = 0.16, isDashed = false) {
-        const points = [];
-        const indices = [];
-        const numPts = 60;
-        const length = 140;
-
-        if (!isDashed) {
-            for (let i = 0; i < numPts; i++) {
-                const t = i / (numPts - 1);
-                const z = -t * length;
-                const x = xOffset + Math.pow(t, 1.8) * curvature;
-
-                points.push(x - width / 2, 0.02, z);
-                points.push(x + width / 2, 0.02, z);
-            }
-            for (let i = 0; i < numPts - 1; i++) {
-                const base = i * 2;
-                indices.push(base, base + 1, base + 2);
-                indices.push(base + 1, base + 3, base + 2);
-            }
-        } else {
-            const cycleLen = 8.0;
-            const dashLen = 3.8;
-            let currentVertex = 0;
-
-            for (let zDist = 0; zDist < length; zDist += 0.5) {
-                const cyclePos = zDist % cycleLen;
-                if (cyclePos <= dashLen) {
-                    const t = zDist / length;
-                    const z = -zDist;
-                    const x = xOffset + Math.pow(t, 1.8) * curvature;
-
-                    points.push(x - width / 2, 0.02, z);
-                    points.push(x + width / 2, 0.02, z);
-                    currentVertex += 2;
-
-                    const nextZDist = zDist + 0.5;
-                    const nextCyclePos = nextZDist % cycleLen;
-                    if (nextCyclePos <= dashLen && nextZDist < length) {
-                        const b = currentVertex - 2;
-                        indices.push(b, b + 1, b + 2);
-                        indices.push(b + 1, b + 3, b + 2);
-                    }
-                }
-            }
-        }
-
-        if (points.length >= 6) {
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
-            if (indices.length > 0) {
-                geo.setIndex(indices);
-            }
-            geo.computeVertexNormals();
-            const mesh = new THREE.Mesh(geo, material);
-            group.add(mesh);
-        }
-    }
-}
-
 // --- 3. Main 3D HUD Application ---
 class DriveHUDApp {
     constructor() {
