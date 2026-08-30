@@ -3,3 +3,4 @@ libs/
 *.mp4
 weights/
 *.onnx
+drivecv/__pycache__

@@ -83,7 +83,9 @@ class ScaledVideoCapture:
             self._cap = cap
         else:
             path = str(source)
-            probe = cv2.VideoCapture(path)
+            probe = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+            if not probe.isOpened():
+                probe = cv2.VideoCapture(path)
             if not probe.isOpened():
                 raise RuntimeError(f"[ERROR] Unable to open video file: '{path}'")
             self.orig_w = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -99,16 +101,18 @@ class ScaledVideoCapture:
                 except Exception as e:
                     print(f"[WARNING] FFmpeg process startup failed for '{path}': {e}. Using OpenCV decoder.")
                     self._use_ffmpeg = False
-                    self._cap = cv2.VideoCapture(path)
+                    self._cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
             else:
-                self._cap = cv2.VideoCapture(path)
+                self._cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
 
     def _start_ffmpeg(self, path: str):
         cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "error",
+            "quiet",
+            "-err_detect",
+            "ignore_err",
             "-i",
             path,
             "-vf",
@@ -147,16 +151,20 @@ class ScaledVideoCapture:
                     pass
                 self._proc = None
             if self._cap is None:
-                self._cap = cv2.VideoCapture(str(self.source))
+                self._cap = cv2.VideoCapture(str(self.source), cv2.CAP_FFMPEG)
 
         if self._cap is None:
             return False, None
-        ret, frame = self._cap.read()
-        if not ret or frame is None:
-            return False, None
-        if frame.shape[1] != self.width or frame.shape[0] != self.height:
-            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
-        return True, frame
+
+        # Retry reading up to 5 times to skip corrupted/incomplete dashcam frames
+        for _ in range(5):
+            ret, frame = self._cap.read()
+            if ret and frame is not None and frame.size > 0 and frame.shape[0] >= 10 and frame.shape[1] >= 10:
+                if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                    frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+                return True, frame
+
+        return False, None
 
     def release(self):
         if self._proc is not None:

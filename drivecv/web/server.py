@@ -394,7 +394,7 @@ class ADASWebServer:
                     telemetry["current_video_path"] = self._current_video_path
 
                     with self._lock:
-                        if ret_jpg:
+                        if ret_jpg and encoded_jpg is not None and len(encoded_jpg) > 500:
                             self._latest_jpeg = encoded_jpg.tobytes()
                         self._latest_telemetry = telemetry
 
