@@ -25,6 +25,7 @@ class ClassicalLaneDetector:
         self.right_line_ema: Optional[np.ndarray] = None  # [x_bot, x_top]
         self.left_confidence: int = 0
         self.right_confidence: int = 0
+        self.last_ll_mask: Optional[np.ndarray] = None
         self.type_detector = LaneTypeDetector()
 
     def update(
@@ -56,18 +57,25 @@ class ClassicalLaneDetector:
             ll_mask = ll_mask.copy()
             ll_mask[hood_cutoff:, :] = 0
 
+        if ll_mask is not None:
+            self.last_ll_mask = ll_mask.copy()
+
         road = curr_gray[y_top:y_bot, :]
         road_h, road_w = road.shape
         scale_w = 640.0 / max(1, road_w)
         small_road = cv2.resize(road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_LINEAR)
 
-        if ll_mask is not None:
-            ll_road = ll_mask[y_top:y_bot, :]
-            small_ll = cv2.resize(ll_road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_LINEAR)
-            small_road = cv2.addWeighted(small_road, 0.85, small_ll, 0.15, 0)
-
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
         edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
+
+        active_ll_mask = ll_mask if ll_mask is not None else self.last_ll_mask
+        if active_ll_mask is not None:
+            ll_road = active_ll_mask[y_top:y_bot, :]
+            if ll_road.shape[0] > 0 and ll_road.shape[1] > 0:
+                small_ll = cv2.resize(ll_road, (edges.shape[1], edges.shape[0]), interpolation=cv2.INTER_NEAREST)
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11))
+                dilated_ll = cv2.dilate((small_ll > 0).astype(np.uint8), kernel, iterations=2)
+                edges = cv2.bitwise_and(edges, edges, mask=dilated_ll)
 
         lines = cv2.HoughLinesP(
             edges,
