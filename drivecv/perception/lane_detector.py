@@ -169,18 +169,9 @@ class ClassicalLaneDetector:
                 self.right_line_ema = (1.0 - self.config.ema_alpha) * self.right_line_ema + self.config.ema_alpha * curr
             self.right_confidence = min(30.0, self.right_confidence + 3.0)
         else:
-            # Maintain right line via true parallel perspective geometry if left line is valid
-            if self.left_line_ema is not None:
-                parallel_xb = self.left_line_ema[0] + 0.38 * w
-                parallel_xt = self.left_line_ema[1] + 0.08 * w
-                parallel_curr = np.array([parallel_xb, parallel_xt], dtype=np.float32)
-                if self.right_line_ema is None:
-                    self.right_line_ema = parallel_curr
-                else:
-                    self.right_line_ema = 0.85 * self.right_line_ema + 0.15 * parallel_curr
-                self.right_confidence = max(5.0, self.right_confidence - 0.2)
-            else:
-                self.right_confidence = max(0.0, self.right_confidence - 1.0)
+            self.right_confidence = max(0.0, self.right_confidence - 2.0)
+            if self.right_confidence <= 0:
+                self.right_line_ema = None
 
         frame_bgr = curr_bgr if curr_bgr is not None else cv2.cvtColor(curr_gray, cv2.COLOR_GRAY2BGR)
 
@@ -222,32 +213,31 @@ class ClassicalLaneDetector:
             x_top = xb_ref + (float(y_top) - y_ref_bot) * slope_inv
             return x_bot, x_top
 
-        if left_valid and not right_valid:
+        left_bot, left_top = (None, None)
+        right_bot, right_top = (None, None)
+
+        if left_valid:
             left_bot, left_top = map_ref_line(self.left_line_ema)
-            right_bot = left_bot + 0.38 * w
-            right_top = left_top + 0.08 * w
-        elif right_valid and not left_valid:
-            right_bot, right_top = map_ref_line(self.right_line_ema)
-            left_bot = right_bot - 0.38 * w
-            left_top = right_top - 0.08 * w
-        else:
-            left_bot, left_top = map_ref_line(self.left_line_ema)
+        if right_valid:
             right_bot, right_top = map_ref_line(self.right_line_ema)
 
-        # Strictly enforce perspective lane convergence sanity:
-        # right_top must be near left_top near the vanishing horizon and never flare outward
-        right_top = max(left_top + 0.04 * w, min(left_top + 0.16 * w, right_top))
-        right_bot = max(left_bot + 0.34 * w, min(left_bot + 0.48 * w, right_bot))
+        if left_valid and right_valid:
+            # Strictly enforce perspective lane convergence sanity:
+            right_top = max(left_top + 0.04 * w, min(left_top + 0.16 * w, right_top))
+            right_bot = max(left_bot + 0.34 * w, min(left_bot + 0.48 * w, right_bot))
 
         # 1. Compute intersection crossing point (vanishing point)
-        dx_l = left_top - left_bot
-        dx_r = right_top - right_bot
-        denom = dx_l - dx_r
-
-        if abs(denom) > 1e-4:
-            t_cross = (right_bot - left_bot) / denom
-            y_cross = y_bot + t_cross * (y_top - y_bot)
-            x_cross = left_bot + t_cross * (left_top - left_bot)
+        if left_valid and right_valid:
+            dx_l = left_top - left_bot
+            dx_r = right_top - right_bot
+            denom = dx_l - dx_r
+            if abs(denom) > 1e-4:
+                t_cross = (right_bot - left_bot) / denom
+                y_cross = y_bot + t_cross * (y_top - y_bot)
+                x_cross = left_bot + t_cross * (left_top - left_bot)
+            else:
+                y_cross = -9999.0
+                x_cross = w / 2.0
         else:
             y_cross = -9999.0
             x_cross = w / 2.0
@@ -277,13 +267,26 @@ class ClassicalLaneDetector:
         # Clamp y_target so path is always valid and does not invert
         y_target = max(float(y_top), min(float(y_bot - 15), y_target))
 
-        # 4. Generate smoothly interpolated path points
+        # 4. Generate smoothly interpolated path points for drivable corridor
         num_pts = 25
         y_vals = np.linspace(y_bot, y_target, num_pts)
         t_vals = (y_vals - y_bot) / float(y_top - y_bot)
 
-        raw_left_x = left_bot + t_vals * (left_top - left_bot)
-        raw_right_x = right_bot + t_vals * (right_top - right_bot)
+        if left_valid and right_valid:
+            raw_left_x = left_bot + t_vals * (left_top - left_bot)
+            raw_right_x = right_bot + t_vals * (right_top - right_bot)
+            lane_center_bottom = (left_bot + right_bot) / 2.0
+            lane_width_bottom = right_bot - left_bot
+        elif left_valid:
+            raw_left_x = left_bot + t_vals * (left_top - left_bot)
+            raw_right_x = raw_left_x + 0.38 * w
+            lane_center_bottom = left_bot + 0.19 * w
+            lane_width_bottom = 0.38 * w
+        else:  # right_valid
+            raw_right_x = right_bot + t_vals * (right_top - right_bot)
+            raw_left_x = raw_right_x - 0.38 * w
+            lane_center_bottom = right_bot - 0.19 * w
+            lane_width_bottom = 0.38 * w
 
         # Strictly enforce non-crossing at every vertical level
         left_x = np.zeros(num_pts, dtype=np.float32)
@@ -301,35 +304,32 @@ class ClassicalLaneDetector:
         pts_right = np.vstack([right_x, y_vals]).T.astype(np.int32)
         path_poly = np.vstack([pts_left, np.flipud(pts_right)])
 
-        lane_center_bottom = (left_bot + right_bot) / 2.0
-        lane_width_bottom = right_bot - left_bot
-
         # 5. Classify line types (color, pattern, double status)
-        left_line_arr = np.array([left_bot, left_top], dtype=np.float32) if left_valid else self.left_line_ema
-        right_line_arr = np.array([right_bot, right_top], dtype=np.float32) if right_valid else self.right_line_ema
+        out_left_line = np.array([left_bot, left_top], dtype=np.float32) if left_valid else None
+        out_right_line = np.array([right_bot, right_top], dtype=np.float32) if right_valid else None
 
         left_info = self.type_detector.analyze_line(
             frame_bgr=frame_bgr,
-            line=left_line_arr,
+            line=out_left_line if left_valid else self.left_line_ema,
             y_bot=y_bot,
-            y_top=y_roi_top if 'y_roi_top' in locals() else y_top,
+            y_top=y_top,
             default_color="yellow",
             default_pattern="solid",
             side="left",
         )
         right_info = self.type_detector.analyze_line(
             frame_bgr=frame_bgr,
-            line=right_line_arr,
+            line=out_right_line if right_valid else self.right_line_ema,
             y_bot=y_bot,
-            y_top=y_roi_top if 'y_roi_top' in locals() else y_top,
+            y_top=y_top,
             default_color="white",
             default_pattern="solid",
             side="right",
         )
 
         return LaneBoundaries(
-            left_line=np.array([left_bot, left_top], dtype=np.float32),
-            right_line=np.array([right_bot, right_top], dtype=np.float32),
+            left_line=out_left_line,
+            right_line=out_right_line,
             y_top=int(y_target),
             y_bot=y_bot,
             y_roi_top=int(y_top),

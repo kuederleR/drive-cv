@@ -72,8 +72,9 @@ class PanopticVisualizer:
         if lanes.da_mask is not None and np.any(lanes.da_mask == 1):
             overlay[lanes.da_mask == 1] = (255, 180, 0)
         if lanes.ll_mask is not None and np.any(lanes.ll_mask == 1):
+            # Highlight YOLOP neural lane lines in bright red
             overlay[lanes.ll_mask == 1] = (0, 0, 255)
-        cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
+        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
     def _draw_drivable_path(self, frame: np.ndarray, lanes: LaneBoundaries):
         if lanes.drivable_polygon is not None and len(lanes.drivable_polygon) >= 6:

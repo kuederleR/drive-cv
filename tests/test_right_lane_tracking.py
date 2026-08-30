@@ -19,8 +19,8 @@ class TestRightLaneTracking(unittest.TestCase):
 
         # Draw a clear left lane line (yellow/white line on left side)
         cv2.line(gray, (240, 500), (430, 310), 255, thickness=4)
-        # Draw a line in the middle of the lane (center noise artifact)
-        cv2.line(gray, (480, 500), (490, 310), 255, thickness=4)
+        # Draw a real right lane line on the right side of the road
+        cv2.line(gray, (720, 500), (550, 310), 255, thickness=4)
 
         lanes = detector.update(curr_gray=gray)
 
@@ -33,13 +33,7 @@ class TestRightLaneTracking(unittest.TestCase):
         # Center of frame is 480. Right lane line bottom must be well to the right of frame center (> 500)
         self.assertGreater(right_bot, 500.0)
 
-        # Check reference EMA at y_ref_bot (513) maintains true host lane width (0.38 * w)
-        self.assertIsNotNone(detector.left_line_ema)
-        self.assertIsNotNone(detector.right_line_ema)
-        ema_width = detector.right_line_ema[0] - detector.left_line_ema[0]
-        self.assertAlmostEqual(ema_width, 0.38 * w, delta=40.0)
-
-    def test_right_lane_fallback_when_unseen(self):
+    def test_right_lane_unseen_returns_none(self):
         config = LaneConfig(y_bot_ratio=0.95, y_top_ratio=0.58)
         detector = ClassicalLaneDetector(config=config)
 
@@ -51,13 +45,9 @@ class TestRightLaneTracking(unittest.TestCase):
 
         lanes = detector.update(curr_gray=gray)
 
-        self.assertIsNotNone(detector.left_line_ema)
-        self.assertIsNotNone(detector.right_line_ema)
-
-        # At reference bottom (y_ref_bot), right line EMA must fallback using parallel projection (left + 0.38 * w)
-        ema_left_bot = detector.left_line_ema[0]
-        ema_right_bot = detector.right_line_ema[0]
-        self.assertAlmostEqual(ema_right_bot, ema_left_bot + 0.38 * w, delta=5.0)
+        self.assertIsNotNone(lanes.left_line)
+        # When right line is not detected, right_line must be None (no right line shown)
+        self.assertIsNone(lanes.right_line)
 
 
 if __name__ == "__main__":

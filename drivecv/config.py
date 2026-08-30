@@ -117,7 +117,7 @@ class VisualizerConfig:
     show_boxes: bool = True
     show_vectors: bool = True
     show_points: bool = True
-    show_seg_masks: bool = False
+    show_seg_masks: bool = True
     show_adas_badges: bool = True
     show_stage_timings: bool = True
     drivable_color: Tuple[int, int, int] = (255, 180, 0)   # Sleek Electric Cyan (BGR)
