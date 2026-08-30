@@ -11,8 +11,10 @@ from drivecv.perception.lane_fit import (
     SideKalman,
     eval_quadratic,
     extract_host_lane_points,
+    gate_points,
     hough_lane_points,
     narrow_band_points,
+    occlude_tracks,
     sample_quadratic,
 )
 from drivecv.perception.lane_type_detector import LaneTypeDetector
@@ -22,16 +24,19 @@ from drivecv.types import LaneBoundaries, Track
 class ClassicalLaneDetector:
     """
     Host ego-lane tracker:
-    - YOLOPv2 ll/da masks seed independent left/right quadratics.
-    - Every-frame Canny search in a 28 px band around each prediction.
-    - Symmetric Hough fallback for cold start (no left-coupled clamps).
-    - Per-side Kalman coasts through dashed gaps and YOLO interval misses.
+    - YOLOPv2 ll/da masks seed dashed / cold-start association only.
+    - Locked tracks follow Canny in a narrow band; mask points are gated
+      so vehicle edges cannot bend or jump the quadratic.
+    - Tracked vehicle boxes are blanked from masks and edges.
+    - Symmetric Hough fallback for cold start.
     """
 
     def __init__(self, config: Optional[LaneConfig] = None):
         self.config = config or LaneConfig()
-        self.left = SideKalman()
-        self.right = SideKalman()
+        max_a = float(getattr(self.config, "max_poly_a", 48.0))
+        max_jump = float(getattr(self.config, "max_jump_px", 28.0))
+        self.left = SideKalman(max_poly_a=max_a, max_jump_px=max_jump)
+        self.right = SideKalman(max_poly_a=max_a, max_jump_px=max_jump)
         self.last_ll_mask: Optional[np.ndarray] = None
         self.last_da_mask: Optional[np.ndarray] = None
         self.type_detector = LaneTypeDetector()
@@ -106,6 +111,10 @@ class ClassicalLaneDetector:
 
         active_ll = ll_mask if ll_mask is not None else self.last_ll_mask
         active_da = da_mask if da_mask is not None else self.last_da_mask
+        occlude_pad = int(getattr(self.config, "vehicle_occlude_pad", 14))
+        if tracked_objects:
+            active_ll = occlude_tracks(active_ll, tracked_objects, pad=occlude_pad)
+            active_da = occlude_tracks(active_da, tracked_objects, pad=occlude_pad)
 
         self.left.predict()
         self.right.predict()
@@ -113,17 +122,16 @@ class ClassicalLaneDetector:
         n_rows = int(getattr(self.config, "n_sample_rows", 24))
         y_samples = np.linspace(float(y_bot), float(y_top), n_rows)
 
-        def pred_left(y: float) -> Optional[float]:
+        def pred_left(y: float):
             return self.left.eval_x(y, float(y_bot), float(y_top))
 
-        def pred_right(y: float) -> Optional[float]:
+        def pred_right(y: float):
             return self.right.eval_x(y, float(y_bot), float(y_top))
 
-        left_pts: List[Tuple[float, float]] = []
-        right_pts: List[Tuple[float, float]] = []
-
+        mask_left = []
+        mask_right = []
         if active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w:
-            m_left, m_right = extract_host_lane_points(
+            mask_left, mask_right = extract_host_lane_points(
                 ll_mask=active_ll,
                 da_mask=active_da if (active_da is not None and active_da.shape[:2] == (h, w)) else None,
                 y_top=y_top,
@@ -133,8 +141,6 @@ class ClassicalLaneDetector:
                 pred_left=pred_left,
                 pred_right=pred_right,
             )
-            left_pts.extend(m_left)
-            right_pts.extend(m_right)
 
         road = curr_gray[y_top:y_bot, :]
         road_h, road_w = road.shape
@@ -143,17 +149,49 @@ class ClassicalLaneDetector:
         small_road = cv2.resize(road, (640, small_h), interpolation=cv2.INTER_LINEAR)
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
         edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
+        if tracked_objects:
+            edges = occlude_tracks(
+                edges,
+                tracked_objects,
+                x_scale=scale_w,
+                y_scale=scale_w,
+                y0=float(y_top),
+                pad=occlude_pad,
+            )
 
-        band = float(getattr(self.config, "search_band_px", 28.0))
+        band = float(getattr(self.config, "search_band_px", 18.0))
+        mask_gate = float(getattr(self.config, "mask_gate_px", 16.0))
+        band_left = []
+        band_right = []
         if self.left.x is not None:
             pred_xs = np.array([pred_left(y) or 0.0 for y in y_samples], dtype=np.float32)
-            left_pts.extend(narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band))
+            band_left = narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band)
         if self.right.x is not None:
             pred_xs = np.array([pred_right(y) or 0.0 for y in y_samples], dtype=np.float32)
-            right_pts.extend(narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band))
+            band_right = narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band)
 
-        min_fit = int(getattr(self.config, "min_fit_points", 3))
-        need_hough = len(left_pts) < min_fit or len(right_pts) < min_fit
+        if self.left.valid:
+            mask_left = gate_points(mask_left, pred_left, mask_gate)
+        if self.right.valid:
+            mask_right = gate_points(mask_right, pred_right, mask_gate)
+
+        min_fit = int(getattr(self.config, "min_fit_points", 2))
+        sparse_left = len(band_left) < max(min_fit, n_rows // 3)
+        sparse_right = len(band_right) < max(min_fit, n_rows // 3)
+
+        # Locked + dense Canny: ignore YOLO. Dashed/cold-start: fuse gated mask.
+        if self.left.valid and not sparse_left:
+            left_pts = list(band_left)
+        else:
+            left_pts = list(band_left) + list(mask_left)
+        if self.right.valid and not sparse_right:
+            right_pts = list(band_right)
+        else:
+            right_pts = list(band_right) + list(mask_right)
+
+        need_hough = (not self.left.valid and len(left_pts) < min_fit) or (
+            not self.right.valid and len(right_pts) < min_fit
+        )
         if need_hough:
             lines = cv2.HoughLinesP(
                 edges,
@@ -173,10 +211,15 @@ class ClassicalLaneDetector:
                 min_length=float(self.config.hough_min_line_length),
                 y_samples=y_samples,
             )
-            if len(left_pts) < min_fit:
+            if not self.left.valid and len(left_pts) < min_fit:
                 left_pts.extend(h_left)
-            if len(right_pts) < min_fit:
+            if not self.right.valid and len(right_pts) < min_fit:
                 right_pts.extend(h_right)
+
+        if self.left.valid:
+            left_pts = gate_points(left_pts, pred_left, max(band, mask_gate))
+        if self.right.valid:
+            right_pts = gate_points(right_pts, pred_right, max(band, mask_gate))
 
         self.left.update_points(left_pts, float(y_bot), float(y_top), min_points=min_fit)
         self.right.update_points(right_pts, float(y_bot), float(y_top), min_points=min_fit)

@@ -53,6 +53,7 @@ def fit_quadratic(
     y_bot: float,
     y_top: float,
     min_points: int = 2,
+    refine: bool = True,
 ) -> Optional[np.ndarray]:
     """Fits [a, b, c] mapping normalized y to x. Degenerate fits pad a (and b)."""
     if xs is None or ys is None:
@@ -74,7 +75,67 @@ def fit_quadratic(
     coeffs[-raw.size :] = raw.astype(np.float32)
     if not np.all(np.isfinite(coeffs)):
         return None
+    if refine and xs.size >= 6:
+        resid = np.abs(xs - np.polyval(raw, yn))
+        med = float(np.median(resid))
+        thresh = max(6.0, 2.5 * med)
+        keep = resid <= thresh
+        if int(np.count_nonzero(keep)) >= min_points and not np.all(keep):
+            return fit_quadratic(
+                xs[keep], ys[keep], y_bot, y_top, min_points=min_points, refine=False
+            )
     return coeffs
+
+
+def gate_points(
+    pts: List[Tuple[float, float]],
+    pred_fn: Optional[PredFn],
+    max_dx: float,
+) -> List[Tuple[float, float]]:
+    """Drops measurements farther than max_dx from the predicted x(y)."""
+    if not pts or pred_fn is None or max_dx <= 0:
+        return pts
+    kept: List[Tuple[float, float]] = []
+    for x, y in pts:
+        px = pred_fn(y)
+        if px is None or abs(float(x) - float(px)) <= max_dx:
+            kept.append((float(x), float(y)))
+    return kept
+
+
+def occlude_tracks(
+    image: np.ndarray,
+    tracks: Optional[list],
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+    y0: float = 0.0,
+    pad: int = 14,
+) -> np.ndarray:
+    """Zeros tracked vehicle boxes so car contours cannot look like lane paint."""
+    if image is None or not tracks:
+        return image
+    h, w = image.shape[:2]
+    copied = False
+    out = image
+    for track in tracks:
+        bbox = getattr(track, "bbox", None)
+        if bbox is None:
+            continue
+        x1 = int((float(bbox.x) - pad) * x_scale)
+        x2 = int((float(bbox.x) + float(bbox.w) + pad) * x_scale)
+        y1 = int((float(bbox.y) - pad - y0) * y_scale)
+        y2 = int((float(bbox.y) + float(bbox.h) + pad - y0) * y_scale)
+        x1 = max(0, min(w, x1))
+        x2 = max(0, min(w, x2))
+        y1 = max(0, min(h, y1))
+        y2 = max(0, min(h, y2))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        if not copied:
+            out = image.copy()
+            copied = True
+        out[y1:y2, x1:x2] = 0
+    return out
 
 
 def _row_clusters(row: np.ndarray, min_width: int = 1) -> List[float]:
@@ -114,16 +175,17 @@ def _assign_clusters(
     if not clusters:
         return None, None
 
-    t_left = da_left if da_left is not None else pred_l
-    t_right = da_right if da_right is not None else pred_r
+    t_left = pred_l if pred_l is not None else da_left
+    t_right = pred_r if pred_r is not None else da_right
     if t_left is None:
         t_left = mid_x * 0.55
     if t_right is None:
         t_right = mid_x + 0.45 * (width - mid_x)
 
+    # Prediction exists: tight pixel gate so a car-sized DA jump cannot steal the line.
     gate = 0.14 * width
     if pred_l is not None or pred_r is not None:
-        gate = 0.10 * width
+        gate = max(8.0, 0.035 * width)
 
     left_x: Optional[float] = None
     right_x: Optional[float] = None
@@ -336,12 +398,14 @@ def hough_lane_points(
 class SideKalman:
     """Independent 3-state Kalman on quadratic coefficients [a, b, c]."""
 
-    Q = np.diag([0.8, 4.0, 16.0]).astype(np.float32)
+    Q = np.diag([0.04, 0.8, 4.0]).astype(np.float32)
     CONF_MAX = 24.0
     CONF_HIT = 4.0
     CONF_MISS = 1.0
 
-    def __init__(self):
+    def __init__(self, max_poly_a: float = 48.0, max_jump_px: float = 28.0):
+        self.max_poly_a = float(max_poly_a)
+        self.max_jump_px = float(max_jump_px)
         self.x: Optional[np.ndarray] = None
         self.P = np.eye(3, dtype=np.float32) * 400.0
         self.confidence: float = 0.0
@@ -367,9 +431,31 @@ class SideKalman:
         if self.confidence <= 0.0:
             self.reset()
 
+    def hold(self):
+        """Coast through an occluded / rejected frame without dropping the lock."""
+        if self.valid:
+            self.confidence = max(1.0, self.confidence - 0.25)
+
     @property
     def valid(self) -> bool:
         return self.acquired and self.x is not None and self.confidence > 0.0
+
+    def _clamp_a(self, coeffs: np.ndarray) -> np.ndarray:
+        out = coeffs.astype(np.float32).copy()
+        lim = self.max_poly_a
+        out[0] = float(np.clip(out[0], -lim, lim))
+        return out
+
+    def _agrees(self, meas: np.ndarray) -> bool:
+        if self.x is None:
+            return True
+        # Compare x at yn = 0, 0.5, 1 (bottom / mid / top)
+        for yn in (0.0, 0.5, 1.0):
+            xm = float(meas[0] * yn * yn + meas[1] * yn + meas[2])
+            xp = float(self.x[0] * yn * yn + self.x[1] * yn + self.x[2])
+            if abs(xm - xp) > self.max_jump_px:
+                return False
+        return True
 
     def update_points(
         self,
@@ -379,14 +465,26 @@ class SideKalman:
         min_points: int = 3,
     ) -> bool:
         if len(pts) < min_points:
+            if self.valid:
+                self.hold()
+                return False
             self.miss()
             return False
         arr = np.asarray(pts, dtype=np.float64)
         meas = fit_quadratic(arr[:, 0], arr[:, 1], y_bot, y_top, min_points=2)
         if meas is None:
+            if self.valid:
+                self.hold()
+                return False
             self.miss()
             return False
+        meas = self._clamp_a(meas)
+        if not self._agrees(meas):
+            self.hold()
+            return False
         self._kalman_update(meas, n_pts=len(pts))
+        if self.x is not None:
+            self.x = self._clamp_a(self.x)
         self.confidence = min(self.CONF_MAX, self.confidence + self.CONF_HIT)
         self.acquired = True
         return True
@@ -394,7 +492,7 @@ class SideKalman:
     def _kalman_update(self, meas: np.ndarray, n_pts: int):
         meas = meas.astype(np.float32)
         r_scale = 80.0 / float(max(3, n_pts))
-        r = r_scale * np.diag([25.0, 100.0, 400.0]).astype(np.float32)
+        r = r_scale * np.diag([36.0, 120.0, 500.0]).astype(np.float32)
         if self.x is None:
             self.x = meas.copy()
             self.P = r.copy()
@@ -404,7 +502,7 @@ class SideKalman:
         try:
             k = self.P @ np.linalg.inv(s)
         except np.linalg.LinAlgError:
-            self.x = 0.7 * self.x + 0.3 * meas
+            self.x = 0.85 * self.x + 0.15 * meas
             return
         self.x = self.x + k @ innov
         eye = np.eye(3, dtype=np.float32)

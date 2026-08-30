@@ -83,9 +83,13 @@ class LaneConfig:
     hough_max_line_gap: int = 25
     n_sample_rows: int = 24
     mask_width: int = 320
-    search_band_px: float = 28.0
+    search_band_px: float = 18.0
     n_poly_samples: int = 12
     min_fit_points: int = 2
+    mask_gate_px: float = 16.0
+    max_jump_px: float = 28.0
+    max_poly_a: float = 48.0
+    vehicle_occlude_pad: int = 14
 
 
 @dataclass
