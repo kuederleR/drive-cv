@@ -94,21 +94,24 @@ class ClassicalLaneDetector:
                 angle = float(np.degrees(np.arctan(slope)))
                 mid_x = (x1 + x2) / 2.0
 
+                y_ref_bot = float(int(h * self.config.y_bot_ratio))
+                y_ref_top = float(int(h * self.config.y_top_ratio))
+
                 # 1. Left Lane Filter
-                if -55.0 <= angle <= -20.0 and mid_x < w * 0.50:
-                    xb = x1 + (y_bot - y1) / slope
-                    xt = x1 + (y_top - y1) / slope
-                    if 0.10 * w <= xb <= 0.38 * w and 0.38 * w <= xt <= 0.52 * w:
+                if -65.0 <= angle <= -15.0 and mid_x < w * 0.55:
+                    xb_ref = x1 + (y_ref_bot - y1) / slope
+                    xt_ref = x1 + (y_ref_top - y1) / slope
+                    if 0.05 * w <= xb_ref <= 0.48 * w and 0.20 * w <= xt_ref <= 0.70 * w:
                         length = float(np.hypot(dx, dy))
-                        left_segs.append((xb, xt, length))
+                        left_segs.append((xb_ref, xt_ref, length))
 
                 # 2. Host Right Lane Filter
-                elif 26.0 <= angle <= 55.0 and 0.45 * w <= mid_x <= 0.65 * w:
-                    xb = x1 + (y_bot - y1) / slope
-                    xt = x1 + (y_top - y1) / slope
-                    if 0.52 * w <= xb <= 0.68 * w and 0.42 * w <= xt <= 0.54 * w:
+                elif 15.0 <= angle <= 65.0 and mid_x >= 0.35 * w:
+                    xb_ref = x1 + (y_ref_bot - y1) / slope
+                    xt_ref = x1 + (y_ref_top - y1) / slope
+                    if 0.48 * w <= xb_ref <= 0.95 * w and 0.20 * w <= xt_ref <= 0.70 * w:
                         length = float(np.hypot(dx, dy))
-                        right_segs.append((xb, xt, length))
+                        right_segs.append((xb_ref, xt_ref, length))
 
         # Update Left Lane EMA
         if left_segs:
@@ -170,17 +173,30 @@ class ClassicalLaneDetector:
                 right_pattern="solid",
             )
 
+        y_ref_bot = float(int(h * self.config.y_bot_ratio))
+        y_ref_top = float(int(h * self.config.y_top_ratio))
+
+        def map_ref_line(ema_arr):
+            xb_ref, xt_ref = float(ema_arr[0]), float(ema_arr[1])
+            denom = y_ref_top - y_ref_bot
+            if abs(denom) < 1e-3:
+                return xb_ref, xt_ref
+            slope_inv = (xt_ref - xb_ref) / denom
+            x_bot = xb_ref + (float(y_bot) - y_ref_bot) * slope_inv
+            x_top = xb_ref + (float(y_top) - y_ref_bot) * slope_inv
+            return x_bot, x_top
+
         if left_valid and not right_valid:
-            left_bot, left_top = float(self.left_line_ema[0]), float(self.left_line_ema[1])
+            left_bot, left_top = map_ref_line(self.left_line_ema)
             right_bot = left_bot + 0.38 * w
             right_top = max(left_top + 0.08 * w, left_bot + 0.38 * w - (left_bot - left_top))
         elif right_valid and not left_valid:
-            right_bot, right_top = float(self.right_line_ema[0]), float(self.right_line_ema[1])
+            right_bot, right_top = map_ref_line(self.right_line_ema)
             left_bot = right_bot - 0.38 * w
             left_top = min(right_top - 0.08 * w, right_bot - 0.38 * w + (right_bot - right_top))
         else:
-            left_bot, left_top = float(self.left_line_ema[0]), float(self.left_line_ema[1])
-            right_bot, right_top = float(self.right_line_ema[0]), float(self.right_line_ema[1])
+            left_bot, left_top = map_ref_line(self.left_line_ema)
+            right_bot, right_top = map_ref_line(self.right_line_ema)
 
         right_bot = max(left_bot + 0.25 * w, right_bot)
 

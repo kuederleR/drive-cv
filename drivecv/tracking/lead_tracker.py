@@ -67,10 +67,16 @@ class LeadVehicleTracker:
             # Without lanes, accept boxes in the lower-central image (weak prior).
             cx, cy_bot = bbox.bottom_center
             return (0.28 * self.camera_geom.img_width <= cx <= 0.72 * self.camera_geom.img_width) and (
-                cy_bot > 0.45 * self.camera_geom.img_height
+                cy_bot > 0.40 * self.camera_geom.img_height
             )
         u, v = bbox.bottom_center
-        return lanes.contains_contact(u, v, margin_frac=self.in_lane_margin_frac)
+        if lanes.contains_contact(u, v, margin_frac=self.in_lane_margin_frac):
+            return True
+        # Fallback prior check for central vehicles directly ahead
+        cx, cy_bot = bbox.bottom_center
+        return (0.35 * self.camera_geom.img_width <= cx <= 0.65 * self.camera_geom.img_width) and (
+            cy_bot > 0.42 * self.camera_geom.img_height
+        )
 
     def _range_of(self, bbox: BoundingBox, lanes: Optional[LaneBoundaries]) -> Tuple[float, float]:
         return self.camera_geom.estimate_range_from_lanes(bbox, lanes)
