@@ -760,4 +760,12 @@ class DriveHUDApp {
 // Start application when DOM is ready
 window.addEventListener('DOMContentLoaded', () => {
     window.app = new DriveHUDApp();
+
+    // Prevent default iOS Safari bounce scrolling outside of scrollable drawer
+    document.addEventListener('touchmove', (e) => {
+        if (e.target.closest('.drawer-body')) {
+            return;
+        }
+        e.preventDefault();
+    }, { passive: false });
 });

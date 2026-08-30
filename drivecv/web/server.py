@@ -12,6 +12,7 @@ import time
 from typing import Optional, Set
 import cv2
 from flask import Flask, Response, jsonify, request, send_from_directory
+from werkzeug.serving import WSGIRequestHandler
 import websockets
 from drivecv.config import PipelineConfig
 from drivecv.pipeline import ADASPipeline, ScaledVideoCapture
@@ -20,6 +21,20 @@ from drivecv.types import FrameData
 # Suppress verbose web logs
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+
+class QuietWSGIRequestHandler(WSGIRequestHandler):
+    """Custom WSGI request handler that handles HTTPS handshake attempts gracefully on HTTP port."""
+
+    def log_error(self, format, *args):
+        if args and isinstance(args[0], str) and ("Bad request version" in args[0] or "Bad request syntax" in args[0]):
+            client_ip = self.client_address[0] if self.client_address else "Client"
+            print(
+                f"[WARNING] HTTPS connection attempted from {client_ip} on HTTP port {self.server.server_port}.\n"
+                f"          👉 On Mobile Safari/iPhone, please type 'http://' explicitly: http://<jetson-ip>:{self.server.server_port}"
+            )
+            return
+        super().log_error(format, *args)
 
 
 class ADASWebServer:
@@ -74,6 +89,10 @@ class ADASWebServer:
         @self.app.route("/static/<path:filename>")
         def serve_static(filename):
             return send_from_directory(self.static_dir, filename)
+
+        @self.app.route("/manifest.json")
+        def manifest():
+            return send_from_directory(self.static_dir, "manifest.json")
 
         @self.app.route("/video_feed")
         def video_feed():
@@ -348,7 +367,14 @@ class ADASWebServer:
 
         # 3. Start Flask HTTP Server
         try:
-            self.app.run(host=self.host, port=self.port, debug=False, use_reloader=False, threaded=True)
+            self.app.run(
+                host=self.host,
+                port=self.port,
+                debug=False,
+                use_reloader=False,
+                threaded=True,
+                request_handler=QuietWSGIRequestHandler,
+            )
         finally:
             self._running = False
             print("[INFO] Web server shutting down...")

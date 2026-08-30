@@ -11,9 +11,6 @@ services:
     privileged: true
     network_mode: host
     ipc: host
-    ports:
-      - "5000:5000"
-      - "5001:5001"
     devices:
       - "/dev/video0:/dev/video0"
     environment:

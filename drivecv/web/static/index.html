@@ -2,8 +2,20 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>DriveCV 3D Ego-Lane & ADAS HUD</title>
+    <!-- iOS Native App Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="DriveCV 3D">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="theme-color" content="#12151c">
+
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="manifest" href="/manifest.json">
+
     <link rel="stylesheet" href="/static/style.css">
     <script src="/static/three.min.js"></script>
     <script src="/static/app.js" defer></script>
@@ -13,38 +25,11 @@
         <!-- 3D Canvas Container -->
         <div id="canvas-container"></div>
 
-        <!-- Clean Top Navigation Bar -->
+        <!-- Minimalist Floating Controls Header -->
         <header id="top-nav">
-            <div class="brand">
-                <span class="logo-icon">🚘</span>
-                <span class="logo-text">DriveCV 3D</span>
-            </div>
-
-            <!-- Dynamic Road Lane Line Type Badges -->
-            <div id="lane-type-display" class="lane-type-display">
-                <div id="left-lane-pill" class="lane-pill pill-yellow">LEFT: SOLID YELLOW</div>
-                <div id="right-lane-pill" class="lane-pill pill-white">RIGHT: SOLID WHITE</div>
-            </div>
-
-            <div class="nav-right">
-                <!-- Input Video Source Selector Toggle -->
-                <div id="source-selector" class="source-selector">
-                    <button id="btn-src-camera" class="source-btn active" title="Switch to Live USB UVC Camera">
-                        <span class="live-dot"></span> Live Camera
-                    </button>
-                    <button id="btn-src-video" class="source-btn" title="Switch to Demo Video File">
-                        <span>🎬</span> Demo Video
-                    </button>
-                </div>
-
-                <div id="status-pill" class="status-pill disconnected">
-                    <span class="dot"></span>
-                    <span id="status-text">OFFLINE</span>
-                </div>
-                <button id="btn-open-controls" class="nav-btn">
-                    <span>⚙️</span> Controls
-                </button>
-            </div>
+            <button id="btn-open-controls" class="nav-btn">
+                <span>⚙️</span> Controls
+            </button>
         </header>
 
         <!-- Minimalist Warning Alert Banner (Pops up on active LDW / FCW alerts) -->
@@ -72,7 +57,13 @@
         <div id="controls-modal" class="modal-backdrop hidden">
             <div id="controls-drawer">
                 <div class="drawer-header">
-                    <h2>System Controls & Calibration</h2>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <h2>System Controls</h2>
+                        <div id="status-pill" class="status-pill disconnected">
+                            <span class="dot"></span>
+                            <span id="status-text">OFFLINE</span>
+                        </div>
+                    </div>
                     <button id="btn-close-controls" class="close-btn">×</button>
                 </div>
 

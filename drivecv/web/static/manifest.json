@@ -1,0 +1,18 @@
+{
+  "name": "DriveCV 3D ADAS",
+  "short_name": "DriveCV",
+  "description": "High-Performance Autonomous Driving Perception, Tracking & 3D HUD ADAS Suite",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#12151c",
+  "theme_color": "#12151c",
+  "icons": [
+    {
+      "src": "/static/apple-touch-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
