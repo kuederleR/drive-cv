@@ -287,6 +287,7 @@ class ADASPipeline:
             timestamp=timestamp,
             dt=dt,
         )
+        self.adas.camera_geom.project_lane_boundaries(lanes)
         timings.adas_ms = (time.perf_counter() - t3) * 1000.0
 
         frame_data = FrameData(
@@ -312,6 +313,28 @@ class ADASPipeline:
         lanes_dict = None
         if frame_data.lanes is not None:
             l = frame_data.lanes
+            if l.left_poly_m is None and l.right_poly_m is None and (
+                l.left_poly_px is not None or l.right_poly_px is not None
+            ):
+                geom = None
+                if adas_manager is not None and getattr(adas_manager, "camera_geom", None) is not None:
+                    geom = adas_manager.camera_geom
+                else:
+                    from drivecv.config import CameraConfig
+                    from drivecv.core.geometry import CameraGeometry
+                    geom = CameraGeometry(CameraConfig())
+                    if pipeline_config is not None:
+                        geom.update_resolution(pipeline_config.width, pipeline_config.height)
+                    else:
+                        geom.update_resolution(960, 540)
+                    geom.calibrate_from_lanes(l)
+                geom.project_lane_boundaries(l)
+
+            def _poly_m_list(arr):
+                if arr is None:
+                    return None
+                return [[float(p[0]), float(p[1])] for p in np.asarray(arr)]
+
             lanes_dict = {
                 "is_valid": bool(l.is_valid),
                 "left_line": [float(x) for x in l.left_line] if l.left_line is not None else None,
@@ -331,6 +354,9 @@ class ADASPipeline:
                 "right_color": getattr(l, "right_color", "white"),
                 "left_pattern": getattr(l, "left_pattern", "solid"),
                 "right_pattern": getattr(l, "right_pattern", "solid"),
+                "left_poly_m": _poly_m_list(getattr(l, "left_poly_m", None)),
+                "right_poly_m": _poly_m_list(getattr(l, "right_poly_m", None)),
+                "curvature_1pm": float(getattr(l, "curvature_1pm", 0.0) or 0.0),
             }
 
         tracks_list = []

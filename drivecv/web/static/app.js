@@ -196,9 +196,7 @@ class LaneRibbonRenderer {
         this.scene.add(this.rightGroup);
     }
 
-    renderLane(isLeft, xOffset, curvature, lineType, isWarning) {
-        const group = isLeft ? this.leftGroup : this.rightGroup;
-
+    clearGroup(group) {
         while (group.children.length > 0) {
             const obj = group.children[0];
             if (obj.geometry) obj.geometry.dispose();
@@ -208,35 +206,208 @@ class LaneRibbonRenderer {
             }
             group.remove(obj);
         }
+    }
 
+    laneStyle(isLeft, lineType, isWarning) {
         const typeStr = (lineType || (isLeft ? 'solid_yellow' : 'solid_white')).toLowerCase();
         const isYellow = typeStr.includes('yellow');
         const isDashed = typeStr.includes('dashed');
         const isDouble = typeStr.includes('double');
-
         let hexColor = isYellow ? 0xffc700 : 0xebf2fa;
         if (isWarning) {
             hexColor = 0xff4444;
         }
-
         const baseMat = new THREE.MeshBasicMaterial({
             color: hexColor,
             side: THREE.DoubleSide,
             transparent: true,
             opacity: 0.92
         });
+        return { typeStr, isDashed, isDouble, baseMat };
+    }
+
+    renderLane(isLeft, xOffset, curvature, lineType, isWarning) {
+        const group = isLeft ? this.leftGroup : this.rightGroup;
+        this.clearGroup(group);
+        const { typeStr, isDashed, isDouble, baseMat } = this.laneStyle(isLeft, lineType, isWarning);
 
         if (isDouble) {
             const sep = 0.12;
-            const leftSubX = xOffset - sep;
-            const rightSubX = xOffset + sep;
-
-            this.buildRibbonMesh(group, leftSubX, curvature, baseMat, 0.09, typeStr.includes('solid_dashed') ? false : isDashed);
-            this.buildRibbonMesh(group, rightSubX, curvature, baseMat, 0.09, isDashed);
+            this.buildRibbonMesh(group, xOffset - sep, curvature, baseMat, 0.09, typeStr.includes('solid_dashed') ? false : isDashed);
+            this.buildRibbonMesh(group, xOffset + sep, curvature, baseMat, 0.09, isDashed);
         } else {
             this.buildRibbonMesh(group, xOffset, curvature, baseMat, 0.16, isDashed);
         }
     }
+
+    renderLaneFromPoly(isLeft, polyM, lineType, isWarning) {
+        const group = isLeft ? this.leftGroup : this.rightGroup;
+        this.clearGroup(group);
+        if (!polyM || polyM.length < 2) {
+            return;
+        }
+        const { typeStr, isDashed, isDouble, baseMat } = this.laneStyle(isLeft, lineType, isWarning);
+        const path = this.densifyPoly(polyM, 48);
+        if (isDouble) {
+            const leftPath = path.map(p => [p[0] - 0.12, p[1]]);
+            const rightPath = path.map(p => [p[0] + 0.12, p[1]]);
+            this.buildPolylineRibbon(group, leftPath, baseMat, 0.09, typeStr.includes('solid_dashed') ? false : isDashed);
+            this.buildPolylineRibbon(group, rightPath, baseMat, 0.09, isDashed);
+        } else {
+            this.buildPolylineRibbon(group, path, baseMat, 0.16, isDashed);
+        }
+    }
+
+    densifyPoly(polyM, numPts) {
+        const samples = [];
+        for (let i = 0; i < polyM.length; i++) {
+            const x = Number(polyM[i][0]);
+            const z = Number(polyM[i][1]);
+            if (!isFinite(x) || !isFinite(z)) continue;
+            samples.push([x, z]);
+        }
+        if (samples.length < 2) {
+            return samples;
+        }
+        let total = 0;
+        const segs = [];
+        for (let i = 1; i < samples.length; i++) {
+            const dx = samples[i][0] - samples[i - 1][0];
+            const dz = samples[i][1] - samples[i - 1][1];
+            const len = Math.hypot(dx, dz);
+            segs.push(len);
+            total += len;
+        }
+        if (total < 1e-3) {
+            return samples;
+        }
+        const out = [];
+        for (let i = 0; i < numPts; i++) {
+            const t = (i / (numPts - 1)) * total;
+            let acc = 0;
+            let idx = 0;
+            while (idx < segs.length && acc + segs[idx] < t) {
+                acc += segs[idx];
+                idx++;
+            }
+            if (idx >= segs.length) {
+                out.push(samples[samples.length - 1]);
+                continue;
+            }
+            const localT = segs[idx] > 1e-6 ? (t - acc) / segs[idx] : 0;
+            const a = samples[idx];
+            const b = samples[idx + 1];
+            out.push([a[0] + (b[0] - a[0]) * localT, a[1] + (b[1] - a[1]) * localT]);
+        }
+        return out;
+    }
+
+    buildPolylineRibbon(group, path, material, width = 0.16, isDashed = false) {
+        if (!path || path.length < 2) {
+            return;
+        }
+        const points = [];
+        const indices = [];
+        const cycleLen = 8.0;
+        const dashLen = 3.8;
+        let dist = 0;
+        let currentVertex = 0;
+
+        const pushPair = (x, zFwd) => {
+            points.push(x - width / 2, 0.02, -zFwd);
+            points.push(x + width / 2, 0.02, -zFwd);
+            currentVertex += 2;
+        };
+
+        for (let i = 0; i < path.length; i++) {
+            if (i > 0) {
+                dist += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+            }
+            const onDash = !isDashed || ((dist % cycleLen) <= dashLen);
+            if (!onDash) {
+                continue;
+            }
+            pushPair(path[i][0], path[i][1]);
+            if (currentVertex >= 4) {
+                const prevOnDash = !isDashed || (((dist - 0.01) % cycleLen) <= dashLen);
+                if (prevOnDash) {
+                    const b = currentVertex - 4;
+                    indices.push(b, b + 1, b + 2);
+                    indices.push(b + 1, b + 3, b + 2);
+                }
+            }
+        }
+
+        if (points.length >= 6) {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
+            if (indices.length > 0) {
+                geo.setIndex(indices);
+            }
+            geo.computeVertexNormals();
+            group.add(new THREE.Mesh(geo, material));
+        }
+    }
+
+    buildRibbonMesh(group, xOffset, curvature, material, width = 0.16, isDashed = false) {
+        const points = [];
+        const indices = [];
+        const numPts = 60;
+        const length = 140;
+
+        if (!isDashed) {
+            for (let i = 0; i < numPts; i++) {
+                const t = i / (numPts - 1);
+                const z = -t * length;
+                const x = xOffset + Math.pow(t, 1.8) * curvature;
+
+                points.push(x - width / 2, 0.02, z);
+                points.push(x + width / 2, 0.02, z);
+            }
+            for (let i = 0; i < numPts - 1; i++) {
+                const base = i * 2;
+                indices.push(base, base + 1, base + 2);
+                indices.push(base + 1, base + 3, base + 2);
+            }
+        } else {
+            const cycleLen = 8.0;
+            const dashLen = 3.8;
+            let currentVertex = 0;
+
+            for (let zDist = 0; zDist < length; zDist += 0.5) {
+                const cyclePos = zDist % cycleLen;
+                if (cyclePos <= dashLen) {
+                    const t = zDist / length;
+                    const z = -zDist;
+                    const x = xOffset + Math.pow(t, 1.8) * curvature;
+
+                    points.push(x - width / 2, 0.02, z);
+                    points.push(x + width / 2, 0.02, z);
+                    currentVertex += 2;
+
+                    const nextZDist = zDist + 0.5;
+                    const nextCyclePos = nextZDist % cycleLen;
+                    if (nextCyclePos <= dashLen && nextZDist < length) {
+                        const b = currentVertex - 2;
+                        indices.push(b, b + 1, b + 2);
+                        indices.push(b + 1, b + 3, b + 2);
+                    }
+                }
+            }
+        }
+
+        if (points.length >= 6) {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
+            if (indices.length > 0) {
+                geo.setIndex(indices);
+            }
+            geo.computeVertexNormals();
+            const mesh = new THREE.Mesh(geo, material);
+            group.add(mesh);
+        }
+    }
+}
 
     buildRibbonMesh(group, xOffset, curvature, material, width = 0.16, isDashed = false) {
         const points = [];
@@ -371,8 +542,11 @@ class DriveHUDApp {
             this.targetOffset = data.adas.ldw_offset_m || 0.0;
         }
 
-        // Calculate dynamic curve from vanishing point
-        if (data.lanes && data.lanes.vanish_x !== null) {
+        // Calculate dynamic curve from world polylines, else vanishing point
+        if (data.lanes && data.lanes.curvature_1pm != null && isFinite(data.lanes.curvature_1pm)) {
+            const curveFromPoly = data.lanes.curvature_1pm * 80.0;
+            this.currentCurvature += (curveFromPoly - this.currentCurvature) * 0.1;
+        } else if (data.lanes && data.lanes.vanish_x !== null) {
             const center_x = 480;
             const delta_x = data.lanes.vanish_x - center_x;
             this.currentCurvature += ((delta_x * 0.06) - this.currentCurvature) * 0.1;
@@ -397,9 +571,17 @@ class DriveHUDApp {
             this.soundEngine.playLDWWarning(false);
         }
 
-        // Render 3D Lane Ribbons matching actual detected line types & colors
-        this.laneRenderer.renderLane(true, -1.85, this.currentCurvature, leftType, isLeftWarning);
-        this.laneRenderer.renderLane(false, 1.85, this.currentCurvature, rightType, isRightWarning);
+        const leftPoly = (data.lanes && data.lanes.left_poly_m) ? data.lanes.left_poly_m : null;
+        const rightPoly = (data.lanes && data.lanes.right_poly_m) ? data.lanes.right_poly_m : null;
+        const hasLeftPoly = Array.isArray(leftPoly) && leftPoly.length >= 2;
+        const hasRightPoly = Array.isArray(rightPoly) && rightPoly.length >= 2;
+        if (hasLeftPoly || hasRightPoly) {
+            this.laneRenderer.renderLaneFromPoly(true, hasLeftPoly ? leftPoly : null, leftType, isLeftWarning);
+            this.laneRenderer.renderLaneFromPoly(false, hasRightPoly ? rightPoly : null, rightType, isRightWarning);
+        } else {
+            this.laneRenderer.renderLane(true, -1.85, this.currentCurvature, leftType, isLeftWarning);
+            this.laneRenderer.renderLane(false, 1.85, this.currentCurvature, rightType, isRightWarning);
+        }
 
         // Update 2D Telemetry Badges in Navigation Bar
         this.updateLaneBadges(leftType, rightType, isLeftWarning, isRightWarning);
@@ -421,7 +603,9 @@ class DriveHUDApp {
                 // Position in 3D space: Z = -distance_m, X = lateral_offset_m + curve offset
                 const targetZ = -(track.distance_m || 10.0);
                 const normDist = Math.abs(targetZ) / 140.0;
-                const curveShift = Math.pow(normDist, 1.8) * this.currentCurvature;
+                const curveShift = (hasLeftPoly || hasRightPoly)
+                    ? 0.0
+                    : Math.pow(normDist, 1.8) * this.currentCurvature;
                 const targetX = (track.lateral_offset_m || 0.0) + curveShift;
 
                 vehMesh.position.x += (targetX - vehMesh.position.x) * 0.2;

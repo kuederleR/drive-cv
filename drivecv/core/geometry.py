@@ -3,7 +3,7 @@ Camera geometry and monocular 3D distance estimation on the ego-lane ground plan
 """
 
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 from drivecv.config import CameraConfig
 from drivecv.types import BoundingBox, LaneBoundaries
@@ -93,6 +93,85 @@ class CameraGeometry:
     def estimate_lateral_offset(self, u: float, distance_z: float) -> float:
         """Lateral X relative to the camera optical axis."""
         return float(((u - self.cx) * distance_z) / self.fx)
+
+    def image_to_ground(self, u: float, v: float) -> Optional[Tuple[float, float]]:
+        """
+        Projects an image pixel onto the flat-road ground plane.
+        Returns (x_m, z_m) with +x right of the camera axis and +z forward, or None.
+        """
+        z_m = self.estimate_distance_to_contact_point(u, v)
+        if z_m is None:
+            return None
+        x_m = self.estimate_lateral_offset(u, z_m)
+        return float(x_m), float(z_m)
+
+    def _poly_px_to_m(self, poly_px: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if poly_px is None:
+            return None
+        arr = np.asarray(poly_px, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+            return None
+        out: List[Tuple[float, float]] = []
+        for u, v in arr:
+            ground = self.image_to_ground(float(u), float(v))
+            if ground is not None:
+                out.append(ground)
+        if len(out) < 2:
+            return None
+        return np.asarray(out, dtype=np.float32)
+
+    @staticmethod
+    def _centerline_curvature_1pm(
+        left_m: Optional[np.ndarray],
+        right_m: Optional[np.ndarray],
+    ) -> float:
+        """Fits x(z) = A z^2 + B z + C on the centerline; returns 2A (1/m)."""
+        if left_m is None or right_m is None:
+            return 0.0
+        z = left_m[:, 1]
+        if z.size < 3:
+            return 0.0
+        xr = np.interp(z, right_m[:, 1], right_m[:, 0])
+        xc = 0.5 * (left_m[:, 0] + xr)
+        order = np.argsort(z)
+        z = z[order]
+        xc = xc[order]
+        if float(z[-1] - z[0]) < 3.0:
+            return 0.0
+        try:
+            a, _b, _c = np.polyfit(z.astype(np.float64), xc.astype(np.float64), 2)
+        except (np.linalg.LinAlgError, ValueError):
+            return 0.0
+        if not math.isfinite(a):
+            return 0.0
+        return float(2.0 * a)
+
+    def project_lane_boundaries(self, lanes: Optional[LaneBoundaries]) -> None:
+        """
+        Fills left_poly_m / right_poly_m / curvature_1pm on `lanes`.
+
+        Points are shifted so the nearest sample origin is the ego-lane center
+        (+x right, +z forward, meters), matching HUD / LDW convention.
+        """
+        if lanes is None:
+            return
+        left_m = self._poly_px_to_m(lanes.left_poly_px)
+        right_m = self._poly_px_to_m(lanes.right_poly_px)
+        if left_m is not None and right_m is not None:
+            x0 = 0.5 * (float(left_m[0, 0]) + float(right_m[0, 0]))
+            left_m = left_m.copy()
+            right_m = right_m.copy()
+            left_m[:, 0] -= x0
+            right_m[:, 0] -= x0
+        elif left_m is not None:
+            left_m = left_m.copy()
+            left_m[:, 0] -= float(left_m[0, 0]) + 0.5 * self.lane_width_m
+        elif right_m is not None:
+            right_m = right_m.copy()
+            right_m[:, 0] -= float(right_m[0, 0]) - 0.5 * self.lane_width_m
+        lanes.left_poly_m = left_m
+        lanes.right_poly_m = right_m
+        lanes.curvature_1pm = self._centerline_curvature_1pm(left_m, right_m)
 
     def estimate_range_from_lanes(
         self,

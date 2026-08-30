@@ -69,7 +69,7 @@ class TrackerConfig:
 
 @dataclass
 class LaneConfig:
-    """Configuration for classical host lane line and drivable corridor estimation."""
+    """Configuration for host lane line and drivable corridor estimation."""
     y_top_ratio: float = 0.58
     y_bot_ratio: float = 0.95
     hood_mask_enabled: bool = True
@@ -81,6 +81,11 @@ class LaneConfig:
     hough_threshold: int = 15
     hough_min_line_length: int = 15
     hough_max_line_gap: int = 25
+    n_sample_rows: int = 24
+    mask_width: int = 320
+    search_band_px: float = 28.0
+    n_poly_samples: int = 12
+    min_fit_points: int = 2
 
 
 @dataclass

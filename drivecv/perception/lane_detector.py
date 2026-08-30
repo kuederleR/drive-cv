@@ -1,32 +1,74 @@
 """
-High-Precision Classical Host Road Lane & Non-Crossing Drivable Path Tracker (160+ FPS).
-Directly preserves the proven classical Canny + Hough + vanishing point solver.
+High-speed host-lane tracker: mask-seeded quadratic Kalman with Canny
+narrow-band updates and symmetric Hough cold-start (target <2 ms / frame).
 """
 
 from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 from drivecv.config import LaneConfig
+from drivecv.perception.lane_fit import (
+    SideKalman,
+    eval_quadratic,
+    extract_host_lane_points,
+    hough_lane_points,
+    narrow_band_points,
+    sample_quadratic,
+)
 from drivecv.perception.lane_type_detector import LaneTypeDetector
-from drivecv.types import BoundingBox, LaneBoundaries, Track
+from drivecv.types import LaneBoundaries, Track
 
 
 class ClassicalLaneDetector:
     """
-    High-Precision & Non-Crossing Host Road Lane Boundary & Drivable Path Tracker:
-    - Downsampled road edge and Hough extraction (2-3 ms).
-    - Analytic vanishing point solver ensures lane boundary lines NEVER cross each other.
-    - Draws a borderless translucent Electric Cyan drivable path extending directly to lead car.
+    Host ego-lane tracker:
+    - YOLOPv2 ll/da masks seed independent left/right quadratics.
+    - Every-frame Canny search in a 28 px band around each prediction.
+    - Symmetric Hough fallback for cold start (no left-coupled clamps).
+    - Per-side Kalman coasts through dashed gaps and YOLO interval misses.
     """
 
     def __init__(self, config: Optional[LaneConfig] = None):
         self.config = config or LaneConfig()
-        self.left_line_ema: Optional[np.ndarray] = None   # [x_bot, x_top]
-        self.right_line_ema: Optional[np.ndarray] = None  # [x_bot, x_top]
-        self.left_confidence: int = 0
-        self.right_confidence: int = 0
+        self.left = SideKalman()
+        self.right = SideKalman()
         self.last_ll_mask: Optional[np.ndarray] = None
+        self.last_da_mask: Optional[np.ndarray] = None
         self.type_detector = LaneTypeDetector()
+        # Legacy aliases used by older tests / debug
+        self.left_line_ema: Optional[np.ndarray] = None
+        self.right_line_ema: Optional[np.ndarray] = None
+        self.left_confidence: float = 0.0
+        self.right_confidence: float = 0.0
+
+    def _empty(
+        self,
+        y_top: int,
+        y_bot: int,
+        w: int,
+        da_mask: Optional[np.ndarray],
+        ll_mask: Optional[np.ndarray],
+    ) -> LaneBoundaries:
+        return LaneBoundaries(
+            left_line=None,
+            right_line=None,
+            y_top=y_top,
+            y_bot=y_bot,
+            y_roi_top=y_top,
+            left_confidence=0.0,
+            right_confidence=0.0,
+            lane_center_bottom=w / 2.0,
+            lane_width_bottom=0.38 * w,
+            drivable_polygon=None,
+            da_mask=da_mask,
+            ll_mask=ll_mask,
+            left_type="solid_yellow",
+            right_type="solid_white",
+            left_color="yellow",
+            right_color="white",
+            left_pattern="solid",
+            right_pattern="solid",
+        )
 
     def update(
         self,
@@ -59,175 +101,123 @@ class ClassicalLaneDetector:
 
         if ll_mask is not None:
             self.last_ll_mask = ll_mask.copy()
+        if da_mask is not None:
+            self.last_da_mask = da_mask.copy()
+
+        active_ll = ll_mask if ll_mask is not None else self.last_ll_mask
+        active_da = da_mask if da_mask is not None else self.last_da_mask
+
+        self.left.predict()
+        self.right.predict()
+
+        n_rows = int(getattr(self.config, "n_sample_rows", 24))
+        y_samples = np.linspace(float(y_bot), float(y_top), n_rows)
+
+        def pred_left(y: float) -> Optional[float]:
+            return self.left.eval_x(y, float(y_bot), float(y_top))
+
+        def pred_right(y: float) -> Optional[float]:
+            return self.right.eval_x(y, float(y_bot), float(y_top))
+
+        left_pts: List[Tuple[float, float]] = []
+        right_pts: List[Tuple[float, float]] = []
+
+        if active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w:
+            m_left, m_right = extract_host_lane_points(
+                ll_mask=active_ll,
+                da_mask=active_da if (active_da is not None and active_da.shape[:2] == (h, w)) else None,
+                y_top=y_top,
+                y_bot=y_bot,
+                n_rows=n_rows,
+                mask_width=int(getattr(self.config, "mask_width", 320)),
+                pred_left=pred_left,
+                pred_right=pred_right,
+            )
+            left_pts.extend(m_left)
+            right_pts.extend(m_right)
 
         road = curr_gray[y_top:y_bot, :]
         road_h, road_w = road.shape
         scale_w = 640.0 / max(1, road_w)
-        small_road = cv2.resize(road, (640, max(10, int(road_h * scale_w))), interpolation=cv2.INTER_LINEAR)
-
+        small_h = max(10, int(road_h * scale_w))
+        small_road = cv2.resize(road, (640, small_h), interpolation=cv2.INTER_LINEAR)
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
         edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
 
-        active_ll_mask = ll_mask if ll_mask is not None else self.last_ll_mask
-        if active_ll_mask is not None:
-            ll_road = active_ll_mask[y_top:y_bot, :]
-            if ll_road.shape[0] > 0 and ll_road.shape[1] > 0:
-                small_ll = cv2.resize(ll_road, (edges.shape[1], edges.shape[0]), interpolation=cv2.INTER_NEAREST)
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 11))
-                dilated_ll = cv2.dilate((small_ll > 0).astype(np.uint8), kernel, iterations=2)
-                edges = cv2.bitwise_and(edges, edges, mask=dilated_ll)
+        band = float(getattr(self.config, "search_band_px", 28.0))
+        if self.left.x is not None:
+            pred_xs = np.array([pred_left(y) or 0.0 for y in y_samples], dtype=np.float32)
+            left_pts.extend(narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band))
+        if self.right.x is not None:
+            pred_xs = np.array([pred_right(y) or 0.0 for y in y_samples], dtype=np.float32)
+            right_pts.extend(narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band))
 
-        lines = cv2.HoughLinesP(
-            edges,
-            1,
-            np.pi / 180,
-            threshold=self.config.hough_threshold,
-            minLineLength=self.config.hough_min_line_length,
-            maxLineGap=self.config.hough_max_line_gap,
-        )
-
-        left_segs: List[Tuple[float, float, float]] = []
-        right_segs: List[Tuple[float, float, float]] = []
-
-        if lines is not None:
-            for line in lines:
-                l_arr = np.array(line).ravel()
-                if len(l_arr) < 4:
-                    continue
-                x1_s, y1_s, x2_s, y2_s = int(l_arr[0]), int(l_arr[1]), int(l_arr[2]), int(l_arr[3])
-                x1 = x1_s / scale_w
-                x2 = x2_s / scale_w
-                y1 = y1_s / scale_w + y_top
-                y2 = y2_s / scale_w + y_top
-
-                dx, dy = x2 - x1, y2 - y1
-                if abs(dx) < 1e-3 or abs(dy) < 1e-3:
-                    continue
-
-                length = float(np.hypot(dx, dy))
-                if length < float(self.config.hough_min_line_length):
-                    continue
-
-                slope = dy / dx
-                angle = float(np.degrees(np.arctan(slope)))
-                mid_x = (x1 + x2) / 2.0
-
-                y_ref_bot = float(int(h * self.config.y_bot_ratio))
-                y_ref_top = float(int(h * self.config.y_top_ratio))
-
-                # 1. Left Lane Filter
-                if -68.0 <= angle <= -12.0 and mid_x < w * 0.55:
-                    xb_ref = x1 + (y_ref_bot - y1) / slope
-                    xt_ref = x1 + (y_ref_top - y1) / slope
-                    if 0.05 * w <= xb_ref <= 0.46 * w and 0.25 * w <= xt_ref <= 0.54 * w:
-                        length = float(np.hypot(dx, dy))
-                        left_segs.append((xb_ref, xt_ref, length))
-
-                # 2. Host Right Lane Filter
-                elif 12.0 <= angle <= 68.0 and mid_x >= 0.45 * w:
-                    xb_ref = x1 + (y_ref_bot - y1) / slope
-                    xt_ref = x1 + (y_ref_top - y1) / slope
-                    min_right_xb = (self.left_line_ema[0] + 0.34 * w) if self.left_line_ema is not None else 0.58 * w
-                    max_right_xb = (self.left_line_ema[0] + 0.48 * w) if self.left_line_ema is not None else 0.92 * w
-                    if min_right_xb <= xb_ref <= max_right_xb and 0.42 * w <= xt_ref <= 0.58 * w:
-                        length = float(np.hypot(dx, dy))
-                        right_segs.append((xb_ref, xt_ref, length))
-
-        # Update Left Lane EMA
-        if left_segs:
-            weights = np.array([s[2] for s in left_segs], dtype=np.float32)
-            xb = float(np.average([s[0] for s in left_segs], weights=weights))
-            xt = float(np.average([s[1] for s in left_segs], weights=weights))
-            curr = np.array([xb, xt], dtype=np.float32)
-            if self.left_line_ema is None:
-                self.left_line_ema = curr
-            else:
-                self.left_line_ema = (1.0 - self.config.ema_alpha) * self.left_line_ema + self.config.ema_alpha * curr
-            self.left_confidence = min(30.0, self.left_confidence + 3.0)
-        else:
-            self.left_confidence = max(0.0, self.left_confidence - 1.0)
-
-        # Update Right Lane EMA
-        if right_segs:
-            if self.left_line_ema is not None:
-                target_xb = self.left_line_ema[0] + 0.38 * w
-                weights = np.array([s[2] / (1.0 + 0.015 * abs(s[0] - target_xb)) for s in right_segs], dtype=np.float32)
-            else:
-                weights = np.array([s[2] for s in right_segs], dtype=np.float32)
-
-            xb = float(np.average([s[0] for s in right_segs], weights=weights))
-            xt = float(np.average([s[1] for s in right_segs], weights=weights))
-
-            if self.left_line_ema is not None:
-                xb = max(self.left_line_ema[0] + 0.34 * w, min(self.left_line_ema[0] + 0.48 * w, xb))
-                xt = max(self.left_line_ema[1] + 0.04 * w, min(self.left_line_ema[1] + 0.16 * w, xt))
-
-            curr = np.array([xb, xt], dtype=np.float32)
-            if self.right_line_ema is None:
-                self.right_line_ema = curr
-            else:
-                self.right_line_ema = (1.0 - self.config.ema_alpha) * self.right_line_ema + self.config.ema_alpha * curr
-            self.right_confidence = min(30.0, self.right_confidence + 3.0)
-        else:
-            self.right_confidence = max(0.0, self.right_confidence - 2.0)
-            if self.right_confidence <= 0:
-                self.right_line_ema = None
-
-        frame_bgr = curr_bgr if curr_bgr is not None else cv2.cvtColor(curr_gray, cv2.COLOR_GRAY2BGR)
-
-        left_valid = self.left_line_ema is not None and self.left_confidence > 0
-        right_valid = self.right_line_ema is not None and self.right_confidence > 0
-
-        if not left_valid and not right_valid:
-            return LaneBoundaries(
-                left_line=None,
-                right_line=None,
+        min_fit = int(getattr(self.config, "min_fit_points", 3))
+        need_hough = len(left_pts) < min_fit or len(right_pts) < min_fit
+        if need_hough:
+            lines = cv2.HoughLinesP(
+                edges,
+                1,
+                np.pi / 180,
+                threshold=self.config.hough_threshold,
+                minLineLength=self.config.hough_min_line_length,
+                maxLineGap=self.config.hough_max_line_gap,
+            )
+            h_left, h_right = hough_lane_points(
+                lines=lines,
+                scale=scale_w,
                 y_top=y_top,
                 y_bot=y_bot,
                 y_roi_top=y_top,
-                left_confidence=0.0,
-                right_confidence=0.0,
-                lane_center_bottom=w / 2.0,
-                lane_width_bottom=0.38 * w,
-                drivable_polygon=None,
-                da_mask=da_mask,
-                ll_mask=ll_mask,
-                left_type="solid_yellow",
-                right_type="solid_white",
-                left_color="yellow",
-                right_color="white",
-                left_pattern="solid",
-                right_pattern="solid",
+                img_w=w,
+                min_length=float(self.config.hough_min_line_length),
+                y_samples=y_samples,
             )
+            if len(left_pts) < min_fit:
+                left_pts.extend(h_left)
+            if len(right_pts) < min_fit:
+                right_pts.extend(h_right)
 
-        y_ref_bot = float(int(h * self.config.y_bot_ratio))
-        y_ref_top = float(int(h * self.config.y_top_ratio))
+        self.left.update_points(left_pts, float(y_bot), float(y_top), min_points=min_fit)
+        self.right.update_points(right_pts, float(y_bot), float(y_top), min_points=min_fit)
 
-        def map_ref_line(ema_arr):
-            xb_ref, xt_ref = float(ema_arr[0]), float(ema_arr[1])
-            denom = y_ref_top - y_ref_bot
-            if abs(denom) < 1e-3:
-                return xb_ref, xt_ref
-            slope_inv = (xt_ref - xb_ref) / denom
-            x_bot = xb_ref + (float(y_bot) - y_ref_bot) * slope_inv
-            x_top = xb_ref + (float(y_top) - y_ref_bot) * slope_inv
-            return x_bot, x_top
+        self.left_confidence = self.left.confidence
+        self.right_confidence = self.right.confidence
+        self.left_line_ema = (
+            np.array(
+                [
+                    eval_quadratic(self.left.x, float(y_bot), float(y_bot), float(y_top)),
+                    eval_quadratic(self.left.x, float(y_top), float(y_bot), float(y_top)),
+                ],
+                dtype=np.float32,
+            )
+            if self.left.valid
+            else None
+        )
+        self.right_line_ema = (
+            np.array(
+                [
+                    eval_quadratic(self.right.x, float(y_bot), float(y_bot), float(y_top)),
+                    eval_quadratic(self.right.x, float(y_top), float(y_bot), float(y_top)),
+                ],
+                dtype=np.float32,
+            )
+            if self.right.valid
+            else None
+        )
 
-        left_bot, left_top = (None, None)
-        right_bot, right_top = (None, None)
+        left_valid = self.left.valid
+        right_valid = self.right.valid
+        if not left_valid and not right_valid:
+            return self._empty(y_top, y_bot, w, da_mask, ll_mask)
 
-        if left_valid:
-            left_bot, left_top = map_ref_line(self.left_line_ema)
-        if right_valid:
-            right_bot, right_top = map_ref_line(self.right_line_ema)
+        left_bot = self.left.eval_x(float(y_bot), float(y_bot), float(y_top)) if left_valid else None
+        left_top = self.left.eval_x(float(y_top), float(y_bot), float(y_top)) if left_valid else None
+        right_bot = self.right.eval_x(float(y_bot), float(y_bot), float(y_top)) if right_valid else None
+        right_top = self.right.eval_x(float(y_top), float(y_bot), float(y_top)) if right_valid else None
 
-        if left_valid and right_valid:
-            # Strictly enforce perspective lane convergence sanity:
-            right_top = max(left_top + 0.04 * w, min(left_top + 0.16 * w, right_top))
-            right_bot = max(left_bot + 0.34 * w, min(left_bot + 0.48 * w, right_bot))
-
-        # 1. Compute intersection crossing point (vanishing point)
-        if left_valid and right_valid:
+        # 1. Vanishing point from linear chords (horizon cue)
+        if left_valid and right_valid and left_bot is not None and right_bot is not None:
             dx_l = left_top - left_bot
             dx_r = right_top - right_bot
             denom = dx_l - dx_r
@@ -242,7 +232,6 @@ class ClassicalLaneDetector:
             y_cross = -9999.0
             x_cross = w / 2.0
 
-        # 2. Target lead vehicle in front (if any)
         lead_obj = None
         min_y = 9999.0
         if tracked_objects is not None:
@@ -260,35 +249,39 @@ class ClassicalLaneDetector:
         else:
             y_target = float(y_top)
 
-        # 3. SAFETY: NEVER cross! Stop at least 25 pixels before crossing point
         if y_cross < y_bot:
             y_target = max(y_target, y_cross + 25.0)
-
-        # Clamp y_target so path is always valid and does not invert
         y_target = max(float(y_top), min(float(y_bot - 15), y_target))
 
-        # 4. Generate smoothly interpolated path points for drivable corridor
         num_pts = 25
         y_vals = np.linspace(y_bot, y_target, num_pts)
-        t_vals = (y_vals - y_bot) / float(y_top - y_bot)
+
+        def eval_side(tracker: SideKalman, yv: np.ndarray, fallback_from: Optional[np.ndarray], sign: float):
+            if tracker.valid and tracker.x is not None:
+                return np.array(
+                    [eval_quadratic(tracker.x, float(y), float(y_bot), float(y_top)) for y in yv],
+                    dtype=np.float32,
+                )
+            if fallback_from is not None:
+                return fallback_from + sign * 0.38 * w
+            return np.full(yv.shape, w / 2.0 + sign * 0.19 * w, dtype=np.float32)
 
         if left_valid and right_valid:
-            raw_left_x = left_bot + t_vals * (left_top - left_bot)
-            raw_right_x = right_bot + t_vals * (right_top - right_bot)
-            lane_center_bottom = (left_bot + right_bot) / 2.0
-            lane_width_bottom = right_bot - left_bot
+            raw_left_x = eval_side(self.left, y_vals, None, -1.0)
+            raw_right_x = eval_side(self.right, y_vals, None, 1.0)
+            lane_center_bottom = 0.5 * (left_bot + right_bot)
+            lane_width_bottom = float(right_bot - left_bot)
         elif left_valid:
-            raw_left_x = left_bot + t_vals * (left_top - left_bot)
+            raw_left_x = eval_side(self.left, y_vals, None, -1.0)
             raw_right_x = raw_left_x + 0.38 * w
-            lane_center_bottom = left_bot + 0.19 * w
+            lane_center_bottom = float(left_bot) + 0.19 * w
             lane_width_bottom = 0.38 * w
-        else:  # right_valid
-            raw_right_x = right_bot + t_vals * (right_top - right_bot)
+        else:
+            raw_right_x = eval_side(self.right, y_vals, None, 1.0)
             raw_left_x = raw_right_x - 0.38 * w
-            lane_center_bottom = right_bot - 0.19 * w
+            lane_center_bottom = float(right_bot) - 0.19 * w
             lane_width_bottom = 0.38 * w
 
-        # Strictly enforce non-crossing at every vertical level
         left_x = np.zeros(num_pts, dtype=np.float32)
         right_x = np.zeros(num_pts, dtype=np.float32)
         for k in range(num_pts):
@@ -304,24 +297,42 @@ class ClassicalLaneDetector:
         pts_right = np.vstack([right_x, y_vals]).T.astype(np.int32)
         path_poly = np.vstack([pts_left, np.flipud(pts_right)])
 
-        # 5. Classify line types (color, pattern, double status)
-        out_left_line = np.array([left_bot, left_top], dtype=np.float32) if left_valid else None
-        out_right_line = np.array([right_bot, right_top], dtype=np.float32) if right_valid else None
+        n_poly = int(getattr(self.config, "n_poly_samples", 12))
+        left_poly = self.left.x.copy() if left_valid else None
+        right_poly = self.right.x.copy() if right_valid else None
+        left_poly_px = (
+            sample_quadratic(left_poly, float(y_bot), float(y_top), n=n_poly, y_end=y_target)
+            if left_poly is not None
+            else None
+        )
+        right_poly_px = (
+            sample_quadratic(right_poly, float(y_bot), float(y_top), n=n_poly, y_end=y_target)
+            if right_poly is not None
+            else None
+        )
 
+        out_left_line = (
+            np.array([left_bot, left_top], dtype=np.float32) if left_valid else None
+        )
+        out_right_line = (
+            np.array([right_bot, right_top], dtype=np.float32) if right_valid else None
+        )
+
+        frame_bgr = curr_bgr if curr_bgr is not None else cv2.cvtColor(curr_gray, cv2.COLOR_GRAY2BGR)
         left_info = self.type_detector.analyze_line(
             frame_bgr=frame_bgr,
-            line=out_left_line if left_valid else self.left_line_ema,
+            line=out_left_line,
             y_bot=y_bot,
-            y_top=y_top,
+            y_top=int(y_top),
             default_color="yellow",
             default_pattern="solid",
             side="left",
         )
         right_info = self.type_detector.analyze_line(
             frame_bgr=frame_bgr,
-            line=out_right_line if right_valid else self.right_line_ema,
+            line=out_right_line,
             y_bot=y_bot,
-            y_top=y_top,
+            y_top=int(y_top),
             default_color="white",
             default_pattern="solid",
             side="right",
@@ -333,10 +344,10 @@ class ClassicalLaneDetector:
             y_top=int(y_target),
             y_bot=y_bot,
             y_roi_top=int(y_top),
-            left_confidence=float(self.left_confidence / 30.0),
-            right_confidence=float(self.right_confidence / 30.0),
-            lane_center_bottom=lane_center_bottom,
-            lane_width_bottom=lane_width_bottom,
+            left_confidence=float(self.left.confidence / SideKalman.CONF_MAX),
+            right_confidence=float(self.right.confidence / SideKalman.CONF_MAX),
+            lane_center_bottom=float(lane_center_bottom),
+            lane_width_bottom=float(lane_width_bottom),
             vanish_x=float(x_cross) if y_cross > -1000 else None,
             vanish_y=float(y_cross) if y_cross > -1000 else None,
             drivable_polygon=path_poly,
@@ -348,4 +359,8 @@ class ClassicalLaneDetector:
             right_color=right_info["color"],
             left_pattern=left_info["pattern"],
             right_pattern=right_info["pattern"],
+            left_poly=left_poly,
+            right_poly=right_poly,
+            left_poly_px=left_poly_px,
+            right_poly_px=right_poly_px,
         )

@@ -95,6 +95,14 @@ class Detection:
     source: str = "yolopv2"
 
 
+def _eval_lane_poly(coeffs: np.ndarray, y: float, y_bot: float, y_top: float) -> float:
+    """x = a*yn^2 + b*yn + c with yn mapped from [y_bot, y_top]."""
+    denom = y_top - y_bot
+    yn = 0.0 if abs(denom) < 1e-3 else (float(y) - y_bot) / denom
+    a, b, c = float(coeffs[0]), float(coeffs[1]), float(coeffs[2])
+    return a * yn * yn + b * yn + c
+
+
 @dataclass
 class LaneBoundaries:
     """Host ego-lane geometry boundaries and drivable corridor."""
@@ -118,23 +126,40 @@ class LaneBoundaries:
     right_color: str = "white"
     left_pattern: str = "solid"
     right_pattern: str = "solid"
+    left_poly: Optional[np.ndarray] = None       # [a, b, c] for x(yn)
+    right_poly: Optional[np.ndarray] = None
+    left_poly_px: Optional[np.ndarray] = None    # Nx2 image samples [[x, y], ...]
+    right_poly_px: Optional[np.ndarray] = None
+    left_poly_m: Optional[np.ndarray] = None     # Nx2 ground [[x_m, z_m], ...]
+    right_poly_m: Optional[np.ndarray] = None
+    curvature_1pm: float = 0.0                   # centerline d^2x/dz^2 (1/m)
 
     @property
     def is_valid(self) -> bool:
         return (self.left_confidence > 0.0 or self.right_confidence > 0.0)
 
-    def x_bounds_at(self, y: float) -> Optional[Tuple[float, float]]:
-        """Interpolates left/right lane x at image row y using the unclipped ROI lines."""
-        if self.left_line is None or self.right_line is None:
-            return None
+    def x_at_side(self, side: str, y: float) -> Optional[float]:
+        """Image x of one host line at row y (poly if present, else linear chord)."""
         y_top = float(self.y_roi_top if self.y_roi_top > 0 else self.y_top)
         y_bot = float(self.y_bot)
         denom = y_top - y_bot
-        if abs(denom) < 1e-3:
+        coeffs = self.left_poly if side == "left" else self.right_poly
+        line = self.left_line if side == "left" else self.right_line
+        if coeffs is not None and len(coeffs) >= 3:
+            return _eval_lane_poly(coeffs, y, y_bot, y_top)
+        if line is None:
             return None
+        if abs(denom) < 1e-3:
+            return float(line[0])
         t = (float(y) - y_bot) / denom
-        xl = float(self.left_line[0] + t * (self.left_line[1] - self.left_line[0]))
-        xr = float(self.right_line[0] + t * (self.right_line[1] - self.right_line[0]))
+        return float(line[0] + t * (line[1] - line[0]))
+
+    def x_bounds_at(self, y: float) -> Optional[Tuple[float, float]]:
+        """Interpolates left/right lane x at image row y using poly or linear chords."""
+        xl = self.x_at_side("left", y)
+        xr = self.x_at_side("right", y)
+        if xl is None or xr is None:
+            return None
         if xr < xl + 8.0:
             return None
         return xl, xr
