@@ -731,10 +731,26 @@ class DriveHUDApp {
 
         // 2D Camera View Toggle
         const viewBtn = document.getElementById('view-toggle');
+        const topNav2dBtn = document.getElementById('btn-toggle-2d');
         const videoOverlay = document.getElementById('video-overlay');
         const closeVideoBtn = document.getElementById('btn-close-video');
-        viewBtn.addEventListener('click', () => videoOverlay.classList.toggle('hidden'));
-        closeVideoBtn.addEventListener('click', () => videoOverlay.classList.add('hidden'));
+        const mjpegImg = document.getElementById('mjpeg-stream');
+
+        const toggle2D = () => {
+            const isHidden = videoOverlay.classList.contains('hidden');
+            if (isHidden) {
+                if (mjpegImg) {
+                    mjpegImg.src = '/video_feed?t=' + Date.now();
+                }
+                videoOverlay.classList.remove('hidden');
+            } else {
+                videoOverlay.classList.add('hidden');
+            }
+        };
+
+        if (viewBtn) viewBtn.addEventListener('click', toggle2D);
+        if (topNav2dBtn) topNav2dBtn.addEventListener('click', toggle2D);
+        if (closeVideoBtn) closeVideoBtn.addEventListener('click', () => videoOverlay.classList.add('hidden'));
 
         // Play / Pause Controls
         const playBtn = document.getElementById('btn-play-pause');

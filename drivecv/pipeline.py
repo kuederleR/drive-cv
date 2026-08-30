@@ -84,16 +84,65 @@ class ScaledVideoCapture:
         else:
             path = str(source)
             cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
-                raise RuntimeError(f"[ERROR] Unable to open video file: '{path}'")
-            self.orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            self.orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            self.fps = float(fps) if (fps and 0 < fps <= 120) else 25.0
-            self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._cap = cap
+            if cap.isOpened():
+                self.orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or width
+                self.orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or height
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                self.fps = float(fps) if (fps and 0 < fps <= 120) else 25.0
+                self.frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+            else:
+                self.orig_w, self.orig_h, self.fps, self.frame_count = width, height, 25.0, -1
+
+            if use_ffmpeg and shutil.which("ffmpeg"):
+                try:
+                    self._start_ffmpeg(path)
+                except Exception as e:
+                    print(f"[WARNING] FFmpeg pipe startup failed for '{path}': {e}. Using OpenCV decoder.")
+                    self._use_ffmpeg = False
+                    self._cap = cv2.VideoCapture(path)
+            else:
+                self._cap = cv2.VideoCapture(path)
+
+    def _start_ffmpeg(self, path: str):
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "quiet",
+            "-err_detect",
+            "ignore_err",
+            "-i",
+            path,
+            "-vf",
+            f"scale={self.width}:{self.height}",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-",
+        ]
+        self._proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=self.frame_nbytes * 4,
+        )
+        self._use_ffmpeg = True
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if self._use_ffmpeg and self._proc is not None and self._proc.stdout is not None:
+            try:
+                raw = self._proc.stdout.read(self.frame_nbytes)
+                if raw is not None and len(raw) == self.frame_nbytes:
+                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
+                    return True, frame
+            except Exception:
+                pass
+
+            # EOF or read failure on FFmpeg pipe
+            return False, None
+
         if self._cap is None:
             return False, None
 

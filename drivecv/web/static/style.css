@@ -230,15 +230,16 @@ canvas {
 /* Picture-in-Picture Video Overlay */
 #video-overlay {
     position: absolute;
-    bottom: 20px;
-    right: 20px;
-    width: 320px;
-    z-index: 15;
+    top: 60px;
+    right: 16px;
+    width: 300px;
+    max-width: calc(100vw - 32px);
+    z-index: 20;
     background-color: var(--panel-bg);
     border: 1px solid var(--panel-border);
-    border-radius: 8px;
+    border-radius: 10px;
     overflow: hidden;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
 .video-header {
