@@ -4,3 +4,4 @@ libs/
 weights/
 *.onnx
 **/__pycache__
+*.pyc
