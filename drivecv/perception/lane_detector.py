@@ -13,8 +13,8 @@ from drivecv.perception.lane_fit import (
     extract_host_lane_points,
     gate_points,
     hough_lane_points,
-    narrow_band_points,
     occlude_tracks,
+    refine_lane_points,
     sample_quadratic,
 )
 from drivecv.perception.lane_type_detector import LaneTypeDetector
@@ -25,8 +25,9 @@ class ClassicalLaneDetector:
     """
     Host ego-lane tracker:
     - YOLOPv2 ll/da masks seed dashed / cold-start association only.
-    - Locked tracks follow Canny in a narrow band; mask points are gated
-      so vehicle edges cannot bend or jump the quadratic.
+    - Locked tracks snap to the paint ridge (intensity peak / Canny edge-pair
+      midpoint), not the nearest Canny edge — that nearest-edge walk is what
+      drifted the line in or out of the lane.
     - Tracked vehicle boxes are blanked from masks and edges.
     - Symmetric Hough fallback for cold start.
     """
@@ -165,10 +166,14 @@ class ClassicalLaneDetector:
         band_right = []
         if self.left.x is not None:
             pred_xs = np.array([pred_left(y) or 0.0 for y in y_samples], dtype=np.float32)
-            band_left = narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band)
+            band_left = refine_lane_points(
+                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band, bgr=curr_bgr
+            )
         if self.right.x is not None:
             pred_xs = np.array([pred_right(y) or 0.0 for y in y_samples], dtype=np.float32)
-            band_right = narrow_band_points(edges, y_top, scale_w, y_samples, pred_xs, band)
+            band_right = refine_lane_points(
+                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band, bgr=curr_bgr
+            )
 
         if self.left.valid:
             mask_left = gate_points(mask_left, pred_left, mask_gate)
@@ -176,18 +181,9 @@ class ClassicalLaneDetector:
             mask_right = gate_points(mask_right, pred_right, mask_gate)
 
         min_fit = int(getattr(self.config, "min_fit_points", 2))
-        sparse_left = len(band_left) < max(min_fit, n_rows // 3)
-        sparse_right = len(band_right) < max(min_fit, n_rows // 3)
-
-        # Locked + dense Canny: ignore YOLO. Dashed/cold-start: fuse gated mask.
-        if self.left.valid and not sparse_left:
-            left_pts = list(band_left)
-        else:
-            left_pts = list(band_left) + list(mask_left)
-        if self.right.valid and not sparse_right:
-            right_pts = list(band_right)
-        else:
-            right_pts = list(band_right) + list(mask_right)
+        # Ridge = paint center; gated YOLO mask centroid is also paint center. Fuse both.
+        left_pts = list(band_left) + list(mask_left)
+        right_pts = list(band_right) + list(mask_right)
 
         need_hough = (not self.left.valid and len(left_pts) < min_fit) or (
             not self.right.valid and len(right_pts) < min_fit
