@@ -243,12 +243,14 @@ def extract_host_lane_segments(
     mask_width: int = 320,
     pred_left: Optional[PredFn] = None,
     pred_right: Optional[PredFn] = None,
+    y_samples: Optional[np.ndarray] = None,
 ) -> Tuple[List[Tuple[float, float, float, float]], List[Tuple[float, float, float, float]]]:
     """
-    Host left/right YOLO lane-line blobs per sample row.
+    Host left/right YOLO blobs per sample row.
 
-    Each item is (x_center, y, x_lo, x_hi) in full-frame pixels. Association
-    prefers drivable-area edges so the ego lines win over the next lane.
+    Each item is (x_center, y, x_lo, x_hi) in full-frame pixels. Lane-line
+    mask centroids win when present; otherwise the drivable-area edge is
+    used so a sparse/dashed ll_mask still yields a host corridor.
     """
     h, w = ll_mask.shape[:2]
     y_top = int(max(0, min(h - 2, y_top)))
@@ -265,8 +267,8 @@ def extract_host_lane_segments(
         small_ll = cv2.resize(ll_roi, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
     else:
         small_ll = ll_roi
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    small_ll = cv2.dilate(small_ll, kernel, iterations=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    small_ll = cv2.dilate(small_ll, kernel, iterations=2)
 
     small_da: Optional[np.ndarray] = None
     if da_mask is not None and da_mask.shape[:2] == ll_mask.shape[:2]:
@@ -274,35 +276,42 @@ def extract_host_lane_segments(
         small_da = cv2.resize(da_roi, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
 
     n_rows = int(max(6, min(n_rows, small_h)))
-    ys_small = np.linspace(0, small_h - 1, n_rows)
+    if y_samples is None:
+        y_list = np.linspace(float(y_bot), float(y_top), n_rows)
+    else:
+        y_list = np.asarray(y_samples, dtype=np.float64).ravel()
     left_segs: List[Tuple[float, float, float, float]] = []
     right_segs: List[Tuple[float, float, float, float]] = []
     mid_s = 0.5 * small_w
+    da_half = 5.0  # ~15 px at full-res when mask_width=320
 
-    for y_s in ys_small:
-        yi = int(round(y_s))
-        y_img = y_top + (yi + 0.5) * (road_h / float(small_h))
+    for y_img in y_list:
+        yf = float(y_img)
+        yi = int(round((yf - float(y_top)) * small_h / float(road_h)))
+        yi = max(0, min(small_h - 1, yi))
         runs = _row_runs(small_ll[yi], min_width=1)
-        if not runs:
-            continue
         clusters = [c for c, _lo, _hi in runs]
         run_by_centroid = {c: (lo, hi) for c, lo, hi in runs}
         da_l = da_r = None
         if small_da is not None:
             da_l, da_r = _da_edges(small_da[yi])
-        pred_l = pred_left(y_img) if pred_left is not None else None
-        pred_r = pred_right(y_img) if pred_right is not None else None
+        pred_l = pred_left(yf) if pred_left is not None else None
+        pred_r = pred_right(yf) if pred_right is not None else None
         pred_l_s = pred_l * scale if pred_l is not None else None
         pred_r_s = pred_r * scale if pred_r is not None else None
         xl_s, xr_s = _assign_clusters(
             clusters, da_l, da_r, pred_l_s, pred_r_s, mid_s, float(small_w)
         )
-        if xl_s is not None:
+        if xl_s is None and da_l is not None:
+            left_segs.append((da_l / scale, yf, (da_l - da_half) / scale, (da_l + da_half) / scale))
+        elif xl_s is not None:
             lo, hi = run_by_centroid.get(xl_s, (xl_s, xl_s + 1.0))
-            left_segs.append((xl_s / scale, y_img, lo / scale, (hi - 1.0) / scale))
-        if xr_s is not None:
+            left_segs.append((xl_s / scale, yf, lo / scale, (hi - 1.0) / scale))
+        if xr_s is None and da_r is not None:
+            right_segs.append((da_r / scale, yf, (da_r - da_half) / scale, (da_r + da_half) / scale))
+        elif xr_s is not None:
             lo, hi = run_by_centroid.get(xr_s, (xr_s, xr_s + 1.0))
-            right_segs.append((xr_s / scale, y_img, lo / scale, (hi - 1.0) / scale))
+            right_segs.append((xr_s / scale, yf, lo / scale, (hi - 1.0) / scale))
     return left_segs, right_segs
 
 
@@ -941,7 +950,9 @@ class RowAnchorTracker:
             self.fill_gaps()
             self.neighbor_prior()
             self.acquired = True
-            if n_fresh >= 2:
+            if not self.acquired:
+                self.confidence = max(self.confidence, 12.0)
+            if n_fresh >= 1:
                 self.confidence = min(self.CONF_MAX, self.confidence + self.CONF_HIT)
             else:
                 self.confidence = max(1.0, self.confidence - self.CONF_MISS)

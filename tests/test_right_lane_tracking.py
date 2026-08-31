@@ -235,6 +235,31 @@ class TestRightLaneTracking(unittest.TestCase):
         self.assertIsNotNone(lanes.left_line)
         self.assertLess(float(lanes.left_line[0]), 320.0)
         self.assertGreater(float(lanes.left_line[0]), 180.0)
+
+    def test_da_edges_track_when_ll_mask_empty(self):
+        """Drivable-area left/right edges must still produce host lines (ll_mask is often sparse)."""
+        config = LaneConfig(y_bot_ratio=0.95, y_top_ratio=0.58, hood_mask_enabled=False)
+        detector = ClassicalLaneDetector(config=config)
+        h, w = 540, 960
+        gray = _blank()
+        ll = np.zeros((h, w), dtype=np.uint8)
+        da = np.zeros((h, w), dtype=np.uint8)
+        for y in range(310, 513):
+            t = (y - 310) / 203.0
+            xl = int(430 + t * (240 - 430))
+            xr = int(550 + t * (720 - 550))
+            da[y, max(0, xl) : min(w, xr + 1)] = 1
+
+        lanes = None
+        for _ in range(4):
+            lanes = detector.update(curr_gray=gray, ll_mask=ll, da_mask=da)
+        self.assertIsNotNone(lanes.left_line)
+        self.assertIsNotNone(lanes.right_line)
+        self.assertLess(float(lanes.left_line[0]), 320.0)
+        self.assertGreater(float(lanes.right_line[0]), 500.0)
+        self.assertGreater(float(lanes.left_confidence), 0.10)
+
+    def test_hood_mask_clips_y_bot(self):
         config = LaneConfig(y_bot_ratio=0.95, hood_mask_enabled=True, hood_height_ratio=0.20)
         detector = ClassicalLaneDetector(config=config)
         lanes = detector.update(curr_gray=_blank())

@@ -131,34 +131,38 @@ class ClassicalLaneDetector:
 
         left_segs: List[Tuple[float, float, float, float]] = []
         right_segs: List[Tuple[float, float, float, float]] = []
-        has_yolo_mask = (
-            active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w
-        )
-        if has_yolo_mask:
+        has_ll = active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w
+        has_da = active_da is not None and active_da.shape[0] == h and active_da.shape[1] == w
+        if has_ll or has_da:
+            ll_for_extract = active_ll if has_ll else np.zeros((h, w), dtype=np.uint8)
             left_segs, right_segs = extract_host_lane_segments(
-                ll_mask=active_ll,
-                da_mask=active_da if (active_da is not None and active_da.shape[:2] == (h, w)) else None,
+                ll_mask=ll_for_extract,
+                da_mask=active_da if has_da else None,
                 y_top=y_top,
                 y_bot=y_bot,
                 n_rows=n_rows,
                 mask_width=int(getattr(self.config, "mask_width", 320)),
                 pred_left=pred_left,
                 pred_right=pred_right,
+                y_samples=y_samples,
             )
 
+        min_fit = int(getattr(self.config, "min_fit_points", 2))
         road = curr_gray[y_top:y_bot, :]
         road_h, road_w = road.shape
         scale_w = 640.0 / max(1, road_w)
         small_h = max(10, int(road_h * scale_w))
         small_road = cv2.resize(road, (640, small_h), interpolation=cv2.INTER_LINEAR)
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
-        edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
-        # Restrict Canny/Hough to YOLO lane-line pixels so cars and glare cannot seed a fit.
-        if has_yolo_mask:
+        edges_full = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
+        edges = edges_full
+        # Restrict Canny to YOLO paint only when we already have host segments.
+        if has_ll and (len(left_segs) >= min_fit or len(right_segs) >= min_fit):
             ll_roi = active_ll[y_top:y_bot, :]
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
             ll_d = cv2.dilate(ll_roi, k, iterations=1)
             ll_small = cv2.resize(ll_d, (640, small_h), interpolation=cv2.INTER_NEAREST)
+            edges = edges_full.copy()
             edges[ll_small == 0] = 0
         if tracked_objects:
             edges = occlude_tracks(
@@ -169,19 +173,26 @@ class ClassicalLaneDetector:
                 y0=float(y_top),
                 pad=occlude_pad,
             )
+            edges_full = occlude_tracks(
+                edges_full,
+                tracked_objects,
+                x_scale=scale_w,
+                y_scale=scale_w,
+                y0=float(y_top),
+                pad=occlude_pad,
+            )
         debug_canny = np.zeros((h, w), dtype=np.uint8)
         roi_h = max(1, y_bot - y_top)
         debug_canny[y_top:y_bot, :] = cv2.resize(edges, (w, roi_h), interpolation=cv2.INTER_NEAREST)
 
-        min_fit = int(getattr(self.config, "min_fit_points", 2))
-        need_hough = (not has_yolo_mask) and (
-            (not self.left.valid) or (not self.right.valid)
+        need_hough = (len(left_segs) < min_fit and not self.left.valid) or (
+            len(right_segs) < min_fit and not self.right.valid
         )
         h_left: List[Tuple[float, float]] = []
         h_right: List[Tuple[float, float]] = []
         if need_hough:
             lines = cv2.HoughLinesP(
-                edges,
+                edges_full,
                 1,
                 np.pi / 180,
                 threshold=self.config.hough_threshold,
@@ -233,7 +244,8 @@ class ClassicalLaneDetector:
                     pad = 6.0
                     half = max(6.0, 0.5 * (xhi - xlo) + pad)
                     gate = half + 24.0
-                    tracker.update_row(i, xc, R_YOLO, gate)
+                    r_yolo = 10.0 if (xhi - xlo) < 22.0 else R_YOLO
+                    tracker.update_row(i, xc, r_yolo, gate)
                     debug_acc.append((xc, float(y), SRC_MASK))
                     meas, raw = measure_lane_row(
                         curr_gray, edges, float(y), xc, half,

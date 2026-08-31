@@ -163,9 +163,9 @@ class PanopticVisualizer:
                 pts_left = lanes.drivable_polygon[:half]
                 pts_right = np.flipud(lanes.drivable_polygon[half:])
 
-                if lanes.left_confidence > 0.10:
+                if lanes.left_line is not None:
                     cv2.polylines(frame, [pts_left], False, self.config.lane_color, 2, cv2.LINE_AA)
-                if lanes.right_confidence > 0.10:
+                if lanes.right_line is not None:
                     cv2.polylines(frame, [pts_right], False, self.config.lane_color, 2, cv2.LINE_AA)
 
                 # Hood cutoff line
