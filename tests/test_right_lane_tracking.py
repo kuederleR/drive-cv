@@ -177,7 +177,64 @@ class TestRightLaneTracking(unittest.TestCase):
         # Linear chord of left_line would be 300 at mid-row
         self.assertNotAlmostEqual(xl, 300.0, delta=5.0)
 
-    def test_hood_mask_clips_y_bot(self):
+    def test_published_line_follows_yolo_mask(self):
+        """With YOLO ll/da masks, the published polyline must stay on the mask blobs."""
+        config = LaneConfig(y_bot_ratio=0.95, y_top_ratio=0.58, hood_mask_enabled=False)
+        detector = ClassicalLaneDetector(config=config)
+        h, w = 540, 960
+        gray = _blank()
+        ll = np.zeros((h, w), dtype=np.uint8)
+        da = np.zeros((h, w), dtype=np.uint8)
+        for y in range(310, 513):
+            t = (y - 310) / 203.0
+            xl = int(430 + t * (240 - 430))
+            xr = int(550 + t * (720 - 550))
+            ll[y, max(0, xl - 3) : min(w, xl + 4)] = 1
+            ll[y, max(0, xr - 3) : min(w, xr + 4)] = 1
+            da[y, max(0, xl) : min(w, xr + 1)] = 1
+
+        lanes = None
+        for _ in range(4):
+            lanes = detector.update(curr_gray=gray, ll_mask=ll, da_mask=da)
+        self.assertIsNotNone(lanes.left_poly_px)
+        self.assertIsNotNone(lanes.right_poly_px)
+
+        def true_xl(y):
+            t = (float(y) - 310.0) / 203.0
+            return 430.0 + t * (240.0 - 430.0)
+
+        errs = []
+        for x, y in lanes.left_poly_px:
+            if 320.0 <= y <= 500.0:
+                errs.append(abs(float(x) - true_xl(y)))
+        self.assertGreater(len(errs), 4)
+        self.assertLess(float(np.median(errs)), 10.0)
+
+    def test_cv_refine_stays_inside_yolo_segment(self):
+        """Bright glare outside the YOLO blob must not pull the fit off the mask."""
+        config = LaneConfig(y_bot_ratio=0.95, y_top_ratio=0.58, hood_mask_enabled=False)
+        detector = ClassicalLaneDetector(config=config)
+        h, w = 540, 960
+        gray = _blank()
+        # Strong vertical glare well inside the lane, away from the left paint
+        gray[:, 360:380] = 255
+        ll = np.zeros((h, w), dtype=np.uint8)
+        da = np.zeros((h, w), dtype=np.uint8)
+        for y in range(310, 513):
+            t = (y - 310) / 203.0
+            xl = int(430 + t * (240 - 430))
+            xr = int(550 + t * (720 - 550))
+            ll[y, max(0, xl - 3) : min(w, xl + 4)] = 1
+            ll[y, max(0, xr - 3) : min(w, xr + 4)] = 1
+            da[y, max(0, xl) : min(w, xr + 1)] = 1
+            gray[y, max(0, xl - 2) : min(w, xl + 3)] = 220
+
+        lanes = None
+        for _ in range(5):
+            lanes = detector.update(curr_gray=gray, ll_mask=ll, da_mask=da)
+        self.assertIsNotNone(lanes.left_line)
+        self.assertLess(float(lanes.left_line[0]), 320.0)
+        self.assertGreater(float(lanes.left_line[0]), 180.0)
         config = LaneConfig(y_bot_ratio=0.95, hood_mask_enabled=True, hood_height_ratio=0.20)
         detector = ClassicalLaneDetector(config=config)
         lanes = detector.update(curr_gray=_blank())

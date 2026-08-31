@@ -1,22 +1,22 @@
 """
-High-speed host-lane tracker: mask-seeded quadratic Kalman with Canny
-narrow-band updates and symmetric Hough cold-start (target <2 ms / frame).
+High-speed host-lane tracker: YOLOPv2 lane-line segments as the primary
+filter, with classical paint-center refine inside those blobs.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 from drivecv.config import LaneConfig
 from drivecv.perception.lane_fit import (
-    SideKalman,
-    band_width_at_y,
-    eval_quadratic,
-    extract_host_lane_points,
-    gate_points,
+    R_HOUGH,
+    R_YOLO,
+    SRC_HOUGH,
+    SRC_MASK,
+    RowAnchorTracker,
+    extract_host_lane_segments,
     hough_lane_points,
+    measure_lane_row,
     occlude_tracks,
-    refine_lane_points,
-    sample_quadratic,
 )
 from drivecv.perception.lane_type_detector import LaneTypeDetector
 from drivecv.types import LaneBoundaries, Track
@@ -25,21 +25,18 @@ from drivecv.types import LaneBoundaries, Track
 class ClassicalLaneDetector:
     """
     Host ego-lane tracker:
-    - YOLOPv2 ll/da masks seed dashed / cold-start association only.
-    - Locked tracks snap to the paint ridge (intensity peak / Canny edge-pair
-      midpoint), not the nearest Canny edge — that nearest-edge walk is what
-      drifted the line in or out of the lane.
-    - Tracked vehicle boxes are blanked from masks and edges.
-    - Symmetric Hough fallback for cold start.
+    - YOLOPv2 lane-line mask is the primary filter: association and search
+      domain come from those segments every frame the mask is available.
+    - Ridge / yellow / Canny only run inside the YOLO blob at that row.
+    - Per-row 1-D Kalman anchors are the track state (poly is a readout).
+    - Vehicle boxes are blanked from masks. Hough only if no YOLO mask.
     """
 
     def __init__(self, config: Optional[LaneConfig] = None):
         self.config = config or LaneConfig()
-        max_a = float(getattr(self.config, "max_poly_a", 48.0))
         max_jump = float(getattr(self.config, "max_jump_px", 28.0))
-        max_c = float(getattr(self.config, "max_bottom_step_px", 1.5))
-        self.left = SideKalman(max_poly_a=max_a, max_jump_px=max_jump, max_c_step=max_c)
-        self.right = SideKalman(max_poly_a=max_a, max_jump_px=max_jump, max_c_step=max_c)
+        self.left = RowAnchorTracker(max_jump_px=max_jump)
+        self.right = RowAnchorTracker(max_jump_px=max_jump)
         self.last_ll_mask: Optional[np.ndarray] = None
         self.last_da_mask: Optional[np.ndarray] = None
         self.type_detector = LaneTypeDetector()
@@ -107,9 +104,9 @@ class ClassicalLaneDetector:
             ll_mask = ll_mask.copy()
             ll_mask[hood_cutoff:, :] = 0
 
-        if ll_mask is not None:
+        if ll_mask is not None and np.any(ll_mask):
             self.last_ll_mask = ll_mask.copy()
-        if da_mask is not None:
+        if da_mask is not None and np.any(da_mask):
             self.last_da_mask = da_mask.copy()
 
         active_ll = ll_mask if ll_mask is not None else self.last_ll_mask
@@ -119,11 +116,12 @@ class ClassicalLaneDetector:
             active_ll = occlude_tracks(active_ll, tracked_objects, pad=occlude_pad)
             active_da = occlude_tracks(active_da, tracked_objects, pad=occlude_pad)
 
-        self.left.predict()
-        self.right.predict()
-
         n_rows = int(getattr(self.config, "n_sample_rows", 24))
         y_samples = np.linspace(float(y_bot), float(y_top), n_rows)
+        self.left.set_ys(y_samples)
+        self.right.set_ys(y_samples)
+        self.left.predict()
+        self.right.predict()
 
         def pred_left(y: float):
             return self.left.eval_x(y, float(y_bot), float(y_top))
@@ -131,10 +129,13 @@ class ClassicalLaneDetector:
         def pred_right(y: float):
             return self.right.eval_x(y, float(y_bot), float(y_top))
 
-        mask_left = []
-        mask_right = []
-        if active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w:
-            mask_left, mask_right = extract_host_lane_points(
+        left_segs: List[Tuple[float, float, float, float]] = []
+        right_segs: List[Tuple[float, float, float, float]] = []
+        has_yolo_mask = (
+            active_ll is not None and active_ll.shape[0] == h and active_ll.shape[1] == w
+        )
+        if has_yolo_mask:
+            left_segs, right_segs = extract_host_lane_segments(
                 ll_mask=active_ll,
                 da_mask=active_da if (active_da is not None and active_da.shape[:2] == (h, w)) else None,
                 y_top=y_top,
@@ -152,6 +153,13 @@ class ClassicalLaneDetector:
         small_road = cv2.resize(road, (640, small_h), interpolation=cv2.INTER_LINEAR)
         blurred = cv2.GaussianBlur(small_road, (5, 5), 0)
         edges = cv2.Canny(blurred, self.config.canny_low, self.config.canny_high)
+        # Restrict Canny/Hough to YOLO lane-line pixels so cars and glare cannot seed a fit.
+        if has_yolo_mask:
+            ll_roi = active_ll[y_top:y_bot, :]
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            ll_d = cv2.dilate(ll_roi, k, iterations=1)
+            ll_small = cv2.resize(ll_d, (640, small_h), interpolation=cv2.INTER_NEAREST)
+            edges[ll_small == 0] = 0
         if tracked_objects:
             edges = occlude_tracks(
                 edges,
@@ -165,46 +173,12 @@ class ClassicalLaneDetector:
         roi_h = max(1, y_bot - y_top)
         debug_canny[y_top:y_bot, :] = cv2.resize(edges, (w, roi_h), interpolation=cv2.INTER_NEAREST)
 
-        band = float(getattr(self.config, "search_band_px", 18.0))
-        band_bot = float(getattr(self.config, "search_band_bot_px", 52.0))
-        band_top = float(getattr(self.config, "search_band_top_px", 12.0))
-        mask_gate = float(getattr(self.config, "mask_gate_px", 16.0))
-        band_pxs = np.array(
-            [band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) for y in y_samples],
-            dtype=np.float32,
-        )
-        band_left = []
-        band_right = []
-        debug_left_bands = None
-        debug_right_bands = None
-        if self.left.x is not None:
-            pred_xs = np.array([pred_left(y) or 0.0 for y in y_samples], dtype=np.float32)
-            band_left = refine_lane_points(
-                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band_pxs,
-                bgr=curr_bgr, max_band_px=band_bot + 12.0,
-            )
-            debug_left_bands = np.column_stack([pred_xs, y_samples, band_pxs])
-        if self.right.x is not None:
-            pred_xs = np.array([pred_right(y) or 0.0 for y in y_samples], dtype=np.float32)
-            band_right = refine_lane_points(
-                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band_pxs,
-                bgr=curr_bgr, max_band_px=band_bot + 12.0,
-            )
-            debug_right_bands = np.column_stack([pred_xs, y_samples, band_pxs])
-
-        if self.left.valid:
-            mask_left = gate_points(mask_left, pred_left, mask_gate)
-        if self.right.valid:
-            mask_right = gate_points(mask_right, pred_right, mask_gate)
-
         min_fit = int(getattr(self.config, "min_fit_points", 2))
-        # Ridge = paint center; gated YOLO mask centroid is also paint center. Fuse both.
-        left_pts = list(band_left) + list(mask_left)
-        right_pts = list(band_right) + list(mask_right)
-
-        need_hough = (not self.left.valid and len(left_pts) < min_fit) or (
-            not self.right.valid and len(right_pts) < min_fit
+        need_hough = (not has_yolo_mask) and (
+            (not self.left.valid) or (not self.right.valid)
         )
+        h_left: List[Tuple[float, float]] = []
+        h_right: List[Tuple[float, float]] = []
         if need_hough:
             lines = cv2.HoughLinesP(
                 edges,
@@ -224,34 +198,73 @@ class ClassicalLaneDetector:
                 min_length=float(self.config.hough_min_line_length),
                 y_samples=y_samples,
             )
-            if not self.left.valid and len(left_pts) < min_fit:
-                left_pts.extend(h_left)
-            if not self.right.valid and len(right_pts) < min_fit:
-                right_pts.extend(h_right)
 
-        if self.left.valid:
-            left_pts = [
-                (x, y) for x, y in left_pts
-                if pred_left(y) is not None
-                and abs(x - pred_left(y)) <= band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) + 6.0
-            ]
-        if self.right.valid:
-            right_pts = [
-                (x, y) for x, y in right_pts
-                if pred_right(y) is not None
-                and abs(x - pred_right(y)) <= band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) + 6.0
-            ]
+        debug_left_raw: List[Tuple[float, float, int]] = []
+        debug_right_raw: List[Tuple[float, float, int]] = []
+        max_band = float(getattr(self.config, "search_band_bot_px", 52.0)) + 12.0
+        y_step = float(np.abs(y_samples[1] - y_samples[0])) if n_rows > 1 else 12.0
 
-        self.left.update_points(left_pts, float(y_bot), float(y_top), min_points=min_fit)
-        self.right.update_points(right_pts, float(y_bot), float(y_top), min_points=min_fit)
+        def nearest_seg(segs, y: float):
+            if not segs:
+                return None
+            best = None
+            best_d = 0.65 * y_step + 6.0
+            for seg in segs:
+                d = abs(float(seg[1]) - y)
+                if d < best_d:
+                    best_d = d
+                    best = seg
+            return best
+
+        def fuse_side(
+            tracker: RowAnchorTracker,
+            segs,
+            hough_pts,
+            want_yellow: bool,
+            debug_acc,
+        ):
+            pred_xs = []
+            if segs:
+                for i, y in enumerate(y_samples):
+                    seg = nearest_seg(segs, float(y))
+                    if seg is None:
+                        continue
+                    xc, _ys, xlo, xhi = (float(seg[0]), float(seg[1]), float(seg[2]), float(seg[3]))
+                    pad = 6.0
+                    half = max(6.0, 0.5 * (xhi - xlo) + pad)
+                    gate = half + 24.0
+                    tracker.update_row(i, xc, R_YOLO, gate)
+                    debug_acc.append((xc, float(y), SRC_MASK))
+                    meas, raw = measure_lane_row(
+                        curr_gray, edges, float(y), xc, half,
+                        y_top, scale_w, bgr=curr_bgr,
+                        y_bot=float(y_bot), y_roi_top=float(y_top),
+                        max_band_px=max_band, want_yellow=want_yellow,
+                    )
+                    debug_acc.extend(raw)
+                    lo = xlo - pad
+                    hi = xhi + pad
+                    for z, r, _src in meas:
+                        if lo <= z <= hi:
+                            tracker.update_row(i, z, r, gate=half + 8.0)
+                    pred_xs.append((xc, float(y), half))
+            elif hough_pts:
+                tracker.ingest_points(hough_pts, r=R_HOUGH, gate=80.0, src=SRC_HOUGH)
+                for x, y in hough_pts:
+                    debug_acc.append((float(x), float(y), SRC_HOUGH))
+            tracker.commit(float(y_bot), float(y_top), min_rows=max(3, min_fit))
+            return np.asarray(pred_xs, dtype=np.float32) if pred_xs else None
+
+        debug_left_bands = fuse_side(self.left, left_segs, h_left, True, debug_left_raw)
+        debug_right_bands = fuse_side(self.right, right_segs, h_right, False, debug_right_raw)
 
         self.left_confidence = self.left.confidence
         self.right_confidence = self.right.confidence
         self.left_line_ema = (
             np.array(
                 [
-                    eval_quadratic(self.left.x, float(y_bot), float(y_bot), float(y_top)),
-                    eval_quadratic(self.left.x, float(y_top), float(y_bot), float(y_top)),
+                    self.left.eval_x(float(y_bot), float(y_bot), float(y_top)),
+                    self.left.eval_x(float(y_top), float(y_bot), float(y_top)),
                 ],
                 dtype=np.float32,
             )
@@ -261,8 +274,8 @@ class ClassicalLaneDetector:
         self.right_line_ema = (
             np.array(
                 [
-                    eval_quadratic(self.right.x, float(y_bot), float(y_bot), float(y_top)),
-                    eval_quadratic(self.right.x, float(y_top), float(y_bot), float(y_top)),
+                    self.right.eval_x(float(y_bot), float(y_bot), float(y_top)),
+                    self.right.eval_x(float(y_top), float(y_bot), float(y_top)),
                 ],
                 dtype=np.float32,
             )
@@ -322,12 +335,14 @@ class ClassicalLaneDetector:
         num_pts = 25
         y_vals = np.linspace(y_bot, y_target, num_pts)
 
-        def eval_side(tracker: SideKalman, yv: np.ndarray, fallback_from: Optional[np.ndarray], sign: float):
-            if tracker.valid and tracker.x is not None:
-                return np.array(
-                    [eval_quadratic(tracker.x, float(y), float(y_bot), float(y_top)) for y in yv],
+        def eval_side(tracker: RowAnchorTracker, yv: np.ndarray, fallback_from: Optional[np.ndarray], sign: float):
+            if tracker.valid:
+                xs = np.array(
+                    [tracker.eval_x(float(y), float(y_bot), float(y_top)) for y in yv],
                     dtype=np.float32,
                 )
+                if np.all(np.isfinite(xs)):
+                    return xs
             if fallback_from is not None:
                 return fallback_from + sign * 0.38 * w
             return np.full(yv.shape, w / 2.0 + sign * 0.19 * w, dtype=np.float32)
@@ -363,19 +378,20 @@ class ClassicalLaneDetector:
         pts_right = np.vstack([right_x, y_vals]).T.astype(np.int32)
         path_poly = np.vstack([pts_left, np.flipud(pts_right)])
 
-        n_poly = int(getattr(self.config, "n_poly_samples", 12))
-        left_poly = self.left.x.copy() if left_valid else None
-        right_poly = self.right.x.copy() if right_valid else None
-        left_poly_px = (
-            sample_quadratic(left_poly, float(y_bot), float(y_top), n=n_poly, y_end=y_target)
-            if left_poly is not None
-            else None
-        )
-        right_poly_px = (
-            sample_quadratic(right_poly, float(y_bot), float(y_top), n=n_poly, y_end=y_target)
-            if right_poly is not None
-            else None
-        )
+        left_poly = self.left.x.copy() if left_valid and self.left.x is not None else None
+        right_poly = self.right.x.copy() if right_valid and self.right.x is not None else None
+        left_poly_px = None
+        right_poly_px = None
+        if left_valid:
+            raw = self.left.polyline()
+            if raw is not None:
+                keep = raw[:, 1] >= float(y_target) - 1.0
+                left_poly_px = raw[keep] if np.count_nonzero(keep) >= 2 else raw
+        if right_valid:
+            raw = self.right.polyline()
+            if raw is not None:
+                keep = raw[:, 1] >= float(y_target) - 1.0
+                right_poly_px = raw[keep] if np.count_nonzero(keep) >= 2 else raw
 
         out_left_line = (
             np.array([left_bot, left_top], dtype=np.float32) if left_valid else None
@@ -410,8 +426,8 @@ class ClassicalLaneDetector:
             y_top=int(y_target),
             y_bot=y_bot,
             y_roi_top=int(y_top),
-            left_confidence=float(self.left.confidence / SideKalman.CONF_MAX),
-            right_confidence=float(self.right.confidence / SideKalman.CONF_MAX),
+            left_confidence=float(self.left.confidence / RowAnchorTracker.CONF_MAX),
+            right_confidence=float(self.right.confidence / RowAnchorTracker.CONF_MAX),
             lane_center_bottom=float(lane_center_bottom),
             lane_width_bottom=float(lane_width_bottom),
             vanish_x=float(x_cross) if y_cross > -1000 else None,
@@ -430,8 +446,8 @@ class ClassicalLaneDetector:
             left_poly_px=left_poly_px,
             right_poly_px=right_poly_px,
             debug_canny=debug_canny,
-            debug_left_meas=np.asarray(left_pts, dtype=np.float32) if left_pts else None,
-            debug_right_meas=np.asarray(right_pts, dtype=np.float32) if right_pts else None,
+            debug_left_meas=np.asarray(debug_left_raw, dtype=np.float32) if debug_left_raw else None,
+            debug_right_meas=np.asarray(debug_right_raw, dtype=np.float32) if debug_right_raw else None,
             debug_left_bands=debug_left_bands,
             debug_right_bands=debug_right_bands,
         )

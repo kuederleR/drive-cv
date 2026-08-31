@@ -105,13 +105,26 @@ class PanopticVisualizer:
                 cv2.line(frame, (max(0, x1), yi), (min(w - 1, x2), yi), color, 1, cv2.LINE_AA)
                 cv2.circle(frame, (int(round(float(x_pred))), yi), 2, color, -1, cv2.LINE_AA)
 
-        def draw_meas(pts, color):
+        def draw_meas(pts, default_color):
+            src_colors = {
+                0: (0, 255, 255),   # yellow chroma
+                1: (0, 180, 255),   # intensity ridge
+                2: (80, 220, 255),  # matched filter
+                3: (0, 255, 80),    # Canny pair
+                4: (0, 0, 255),     # YOLO ll_mask
+                5: (255, 255, 255), # Hough
+            }
             if pts is None or len(pts) == 0:
                 return
-            for x, y in pts:
+            arr = np.asarray(pts)
+            for row in arr:
+                x, y = float(row[0]), float(row[1])
+                color = default_color
+                if row.size >= 3:
+                    color = src_colors.get(int(row[2]), default_color)
                 cv2.drawMarker(
                     frame,
-                    (int(round(float(x))), int(round(float(y)))),
+                    (int(round(x)), int(round(y))),
                     color,
                     cv2.MARKER_CROSS,
                     8,

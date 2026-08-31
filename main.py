@@ -62,8 +62,8 @@ def main():
     parser.add_argument(
         "--interval",
         type=int,
-        default=15,
-        help="Cadence for periodic background neural detection in frames (default: 15).",
+        default=1,
+        help="YOLOPv2 cadence in frames (default: 1 = every frame the worker is free).",
     )
     parser.add_argument(
         "--show-seg",

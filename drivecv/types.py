@@ -144,7 +144,13 @@ class LaneBoundaries:
         return (self.left_confidence > 0.0 or self.right_confidence > 0.0)
 
     def x_at_side(self, side: str, y: float) -> Optional[float]:
-        """Image x of one host line at row y (poly if present, else linear chord)."""
+        """Image x of one host line at row y (anchors if present, else poly / chord)."""
+        poly_px = self.left_poly_px if side == "left" else self.right_poly_px
+        if poly_px is not None and len(poly_px) >= 2:
+            ys = poly_px[:, 1].astype(np.float64)
+            xs = poly_px[:, 0].astype(np.float64)
+            order = np.argsort(ys)
+            return float(np.interp(float(y), ys[order], xs[order]))
         y_top = float(self.y_roi_top if self.y_roi_top > 0 else self.y_top)
         y_bot = float(self.y_bot)
         denom = y_top - y_bot

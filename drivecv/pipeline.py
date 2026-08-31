@@ -185,6 +185,8 @@ class ADASPipeline:
         self.last_decode_ms: float = 0.0
         self._timing_log_interval: int = 30
         self._last_tracks: List[Track] = []
+        self._latest_da_mask: Optional[np.ndarray] = None
+        self._latest_ll_mask: Optional[np.ndarray] = None
 
     def _compute_padded_crop(self, bbox: BoundingBox, frame_w: int, frame_h: int) -> BoundingBox:
         pad_ratio = self.config.detector.crop_padding_ratio
@@ -237,20 +239,32 @@ class ADASPipeline:
             self.prev_gray = curr_gray
 
         fresh_detections: Optional[List[Detection]] = None
-        da_mask: Optional[np.ndarray] = None
-        ll_mask: Optional[np.ndarray] = None
 
         if self.async_worker is not None:
             worker_res = self.async_worker.fetch_results()
             if worker_res is not None:
                 fresh_detections, da_mask, ll_mask = worker_res
+                if da_mask is not None and np.any(da_mask):
+                    self._latest_da_mask = da_mask
+                if ll_mask is not None and np.any(ll_mask):
+                    self._latest_ll_mask = ll_mask
+
+        # Keep YOLOPv2 in flight every frame the worker is free so ll_mask stays current.
+        if (
+            self.player.auto_schedule
+            and self.async_worker is not None
+            and not self.async_worker.is_busy
+            and self.frames_since_yolo >= self.config.detector.interval_frames
+        ):
+            self.async_worker.submit_frame(proc_frame, roi_crop=None)
+            self.frames_since_yolo = 0
 
         t2 = time.perf_counter()
         lanes = self.lane_detector.update(
             curr_gray=curr_gray,
             tracked_objects=self._last_tracks,
-            da_mask=da_mask,
-            ll_mask=ll_mask,
+            da_mask=self._latest_da_mask,
+            ll_mask=self._latest_ll_mask,
             curr_bgr=proc_frame,
         )
         timings.lanes_ms = (time.perf_counter() - t2) * 1000.0
@@ -268,15 +282,6 @@ class ADASPipeline:
         )
         self._last_tracks = tracks
         timings.track_ms = (time.perf_counter() - t1) * 1000.0
-
-        if (
-            self.player.auto_schedule
-            and self.async_worker is not None
-            and not self.async_worker.is_busy
-            and self.frames_since_yolo >= self.config.detector.interval_frames
-        ):
-            self.async_worker.submit_frame(proc_frame, roi_crop=None)
-            self.frames_since_yolo = 0
 
         t3 = time.perf_counter()
         adas_alert = self.adas.process(

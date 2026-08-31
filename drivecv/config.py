@@ -25,7 +25,7 @@ class DetectorConfig:
     iou_thresh: float = 0.45
     enabled: bool = True
     async_inference: bool = True
-    interval_frames: int = 5
+    interval_frames: int = 1  # submit a new YOLOPv2 pass as soon as the worker is free
     crop_padding_ratio: float = 0.30  # Percentage buffer for targeted crop YOLO
     # None = letterbox the process frame directly to input_size (do not downscale then upscale).
     downsample_size: Optional[Tuple[int, int]] = None
