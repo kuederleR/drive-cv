@@ -899,6 +899,23 @@ class DriveHUDApp {
         if (topNav2dBtn) topNav2dBtn.addEventListener('click', toggle2D);
         if (closeVideoBtn) closeVideoBtn.addEventListener('click', () => videoOverlay.classList.add('hidden'));
 
+        const laneDebugSelect = document.getElementById('select-lane-debug');
+        if (laneDebugSelect) {
+            fetch('/api/lane_debug').then(r => r.json()).then(res => {
+                if (res && res.mode) laneDebugSelect.value = res.mode;
+            }).catch(() => {});
+            laneDebugSelect.addEventListener('change', () => {
+                fetch('/api/lane_debug', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: laneDebugSelect.value })
+                });
+                if (videoOverlay && videoOverlay.classList.contains('hidden')) {
+                    toggle2D();
+                }
+            });
+        }
+
         // Play / Pause Controls
         const playBtn = document.getElementById('btn-play-pause');
         const playIcon = document.getElementById('play-icon');

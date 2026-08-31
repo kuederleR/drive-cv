@@ -239,6 +239,21 @@ class ADASWebServer:
                 "height_ratio": float(self.pipeline.config.lane.hood_height_ratio),
             })
 
+        @self.app.route("/api/lane_debug", methods=["GET", "POST"])
+        def api_lane_debug():
+            modes = ("off", "canny", "ridge", "masks", "all")
+            if request.method == "POST":
+                data = request.get_json() or {}
+                mode = str(data.get("mode", "off")).lower()
+                if mode not in modes:
+                    return jsonify({"status": "error", "message": f"mode must be one of {modes}"}), 400
+                self.pipeline.config.visualizer.lane_debug = mode
+            return jsonify({
+                "status": "ok",
+                "mode": str(getattr(self.pipeline.config.visualizer, "lane_debug", "off")),
+                "modes": list(modes),
+            })
+
         @self.app.route("/api/telemetry")
         def api_telemetry():
             with self._lock:

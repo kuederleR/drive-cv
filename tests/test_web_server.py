@@ -85,6 +85,44 @@ class TestTelemetrySerialization(unittest.TestCase):
         self.assertEqual(telemetry["adas"]["ldw_state"], "NORMAL")
         self.assertEqual(telemetry["adas"]["fcw_level"], "SAFE")
 
+    def test_telemetry_includes_world_polylines(self):
+        left_px = np.array([[200.0, 500.0], [300.0, 400.0], [400.0, 300.0]], dtype=np.float32)
+        right_px = np.array([[760.0, 500.0], [660.0, 400.0], [560.0, 300.0]], dtype=np.float32)
+        lanes = LaneBoundaries(
+            left_line=np.array([200.0, 400.0]),
+            right_line=np.array([760.0, 560.0]),
+            y_top=250,
+            y_bot=540,
+            y_roi_top=250,
+            left_confidence=0.9,
+            right_confidence=0.85,
+            lane_center_bottom=480.0,
+            lane_width_bottom=560.0,
+            vanish_x=480.0,
+            vanish_y=250.0,
+            left_poly_px=left_px,
+            right_poly_px=right_px,
+        )
+        frame_data = FrameData(
+            frame_idx=1,
+            timestamp=0.04,
+            proc_frame=np.zeros((540, 960, 3), dtype=np.uint8),
+            gray_frame=np.zeros((540, 960), dtype=np.uint8),
+            tracks=[],
+            lanes=lanes,
+            fps=25.0,
+        )
+        telemetry = ADASPipeline.get_telemetry_dict(frame_data)
+        self.assertIsNotNone(telemetry["lanes"]["left_poly_m"])
+        self.assertIsNotNone(telemetry["lanes"]["right_poly_m"])
+        self.assertGreaterEqual(len(telemetry["lanes"]["left_poly_m"]), 2)
+        self.assertGreaterEqual(len(telemetry["lanes"]["right_poly_m"]), 2)
+        self.assertEqual(len(telemetry["lanes"]["left_poly_m"][0]), 2)
+        self.assertIn("curvature_1pm", telemetry["lanes"])
+        # Lane-center frame: left x negative, right x positive at nearest sample
+        self.assertLess(telemetry["lanes"]["left_poly_m"][0][0], 0.0)
+        self.assertGreater(telemetry["lanes"]["right_poly_m"][0][0], 0.0)
+
 
 class TestWebServerRoutes(unittest.TestCase):
     def setUp(self):

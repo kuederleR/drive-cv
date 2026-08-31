@@ -112,10 +112,20 @@
                             <span class="card-icon">📹</span>
                             <span class="card-title">Camera Feed</span>
                         </div>
-                        <p class="card-desc">Toggle picture-in-picture 2D camera feed with detection masks.</p>
+                        <p class="card-desc">Toggle picture-in-picture 2D camera feed. Use debug views to inspect Canny, search bands, and ridge measurements.</p>
                         <button id="view-toggle" class="btn btn-secondary">
                             Toggle 2D Camera Overlay
                         </button>
+                        <div class="select-container" style="margin-top: 12px;">
+                            <label for="select-lane-debug" class="input-label">Lane tracker debug view:</label>
+                            <select id="select-lane-debug" class="custom-select">
+                                <option value="off" selected>Off (normal overlay)</option>
+                                <option value="canny">Canny edges</option>
+                                <option value="ridge">Ridge search + measurements</option>
+                                <option value="masks">YOLO lane / drivable masks</option>
+                                <option value="all">All (Canny + ridge + masks)</option>
+                            </select>
+                        </div>
                     </div>
 
                     <!-- Playback Controls -->

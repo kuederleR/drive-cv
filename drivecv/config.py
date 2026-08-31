@@ -84,12 +84,15 @@ class LaneConfig:
     n_sample_rows: int = 24
     mask_width: int = 320
     search_band_px: float = 18.0
+    search_band_top_px: float = 12.0
+    search_band_bot_px: float = 52.0
     n_poly_samples: int = 12
     min_fit_points: int = 2
     mask_gate_px: float = 16.0
     max_jump_px: float = 28.0
     max_poly_a: float = 48.0
     vehicle_occlude_pad: int = 14
+    max_bottom_step_px: float = 1.5
 
 
 @dataclass
@@ -129,6 +132,7 @@ class VisualizerConfig:
     show_seg_masks: bool = True
     show_adas_badges: bool = True
     show_stage_timings: bool = True
+    lane_debug: str = "off"  # off | canny | ridge | masks | all
     drivable_color: Tuple[int, int, int] = (255, 180, 0)   # Sleek Electric Cyan (BGR)
     lane_color: Tuple[int, int, int] = (0, 255, 255)       # Yellow
     lead_color_safe: Tuple[int, int, int] = (0, 255, 0)

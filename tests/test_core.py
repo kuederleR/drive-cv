@@ -104,6 +104,81 @@ class TestCore(unittest.TestCase):
         self.assertTrue(17.0 < kf.z < 21.0)
         self.assertLess(kf.vz, 0.0)  # approaching (Z decreasing)
 
+    def test_image_to_ground_and_lane_projection(self):
+        config = CameraConfig(focal_length_px=1150.0, camera_height_m=1.25, lane_width_m=3.7)
+        geom = CameraGeometry(config, img_width=960, img_height=540)
+        geom.horizon_y = 250.0
+
+        ground = geom.image_to_ground(480.0, 500.0)
+        self.assertIsNotNone(ground)
+        x_m, z_m = ground
+        self.assertAlmostEqual(x_m, 0.0, places=1)
+        self.assertGreater(z_m, 2.0)
+
+        right = geom.image_to_ground(700.0, 500.0)
+        self.assertIsNotNone(right)
+        self.assertGreater(right[0], 0.0)
+
+        lanes = LaneBoundaries(
+            left_line=np.array([200.0, 400.0], dtype=np.float32),
+            right_line=np.array([760.0, 560.0], dtype=np.float32),
+            y_bot=500,
+            y_roi_top=300,
+            y_top=300,
+            vanish_x=480.0,
+            vanish_y=250.0,
+            left_confidence=1.0,
+            right_confidence=1.0,
+            left_poly_px=np.array([[220.0, 490.0], [320.0, 390.0], [400.0, 310.0]], dtype=np.float32),
+            right_poly_px=np.array([[740.0, 490.0], [640.0, 390.0], [560.0, 310.0]], dtype=np.float32),
+        )
+        geom.calibrate_from_lanes(lanes)
+        geom.project_lane_boundaries(lanes)
+        self.assertIsNotNone(lanes.left_poly_m)
+        self.assertIsNotNone(lanes.right_poly_m)
+        self.assertLess(float(lanes.left_poly_m[0, 0]), 0.0)
+        self.assertGreater(float(lanes.right_poly_m[0, 0]), 0.0)
+        self.assertGreater(float(lanes.left_poly_m[-1, 1]), float(lanes.left_poly_m[0, 1]))
+
+    def test_telemetry_includes_world_polylines(self):
+        from drivecv.pipeline import ADASPipeline
+        from drivecv.types import FrameData
+
+        left_px = np.array([[200.0, 500.0], [300.0, 400.0], [400.0, 300.0]], dtype=np.float32)
+        right_px = np.array([[760.0, 500.0], [660.0, 400.0], [560.0, 300.0]], dtype=np.float32)
+        lanes = LaneBoundaries(
+            left_line=np.array([200.0, 400.0]),
+            right_line=np.array([760.0, 560.0]),
+            y_top=250,
+            y_bot=540,
+            y_roi_top=250,
+            left_confidence=0.9,
+            right_confidence=0.85,
+            lane_center_bottom=480.0,
+            lane_width_bottom=560.0,
+            vanish_x=480.0,
+            vanish_y=250.0,
+            left_poly_px=left_px,
+            right_poly_px=right_px,
+        )
+        frame_data = FrameData(
+            frame_idx=1,
+            timestamp=0.04,
+            proc_frame=np.zeros((540, 960, 3), dtype=np.uint8),
+            gray_frame=np.zeros((540, 960), dtype=np.uint8),
+            tracks=[],
+            lanes=lanes,
+            fps=25.0,
+        )
+        telemetry = ADASPipeline.get_telemetry_dict(frame_data)
+        self.assertIsNotNone(telemetry["lanes"]["left_poly_m"])
+        self.assertIsNotNone(telemetry["lanes"]["right_poly_m"])
+        self.assertGreaterEqual(len(telemetry["lanes"]["left_poly_m"]), 2)
+        self.assertEqual(len(telemetry["lanes"]["left_poly_m"][0]), 2)
+        self.assertIn("curvature_1pm", telemetry["lanes"])
+        self.assertLess(telemetry["lanes"]["left_poly_m"][0][0], 0.0)
+        self.assertGreater(telemetry["lanes"]["right_poly_m"][0][0], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

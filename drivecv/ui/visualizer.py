@@ -43,8 +43,14 @@ class PanopticVisualizer:
         vis_frame = frame.copy()
 
         # 1. Neural Segmentation Overlay (if enabled and available)
-        if self.config.show_seg_masks and frame_data.lanes is not None:
+        debug_mode = str(getattr(self.config, "lane_debug", "off") or "off").lower()
+        show_masks = self.config.show_seg_masks or debug_mode in ("masks", "all")
+        if show_masks and frame_data.lanes is not None:
             self._draw_neural_masks(vis_frame, frame_data.lanes)
+
+        # 1b. Lane tracker debug (Canny / ridge search / measurements)
+        if debug_mode not in ("", "off", "none") and frame_data.lanes is not None:
+            self._draw_lane_debug(vis_frame, frame_data.lanes, debug_mode)
 
         # 2. AR Drivable Path & Non-Crossing Boundary Lines
         if self.config.show_path and frame_data.lanes is not None:
@@ -75,6 +81,56 @@ class PanopticVisualizer:
             # Highlight YOLOP neural lane lines in bright red
             overlay[lanes.ll_mask == 1] = (0, 0, 255)
         cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+    def _draw_lane_debug(self, frame: np.ndarray, lanes: LaneBoundaries, mode: str):
+        """Overlays Canny, search bands, and ridge measurements on the camera feed."""
+        h, w = frame.shape[:2]
+        show_canny = mode in ("canny", "all")
+        show_ridge = mode in ("ridge", "all", "canny")
+
+        if show_canny and lanes.debug_canny is not None and lanes.debug_canny.shape[:2] == (h, w):
+            overlay = frame.copy()
+            overlay[lanes.debug_canny > 0] = (0, 255, 80)
+            cv2.addWeighted(overlay, 0.40, frame, 0.60, 0, frame)
+
+        def draw_bands(bands, color):
+            if bands is None or len(bands) == 0:
+                return
+            for x_pred, y, half in bands:
+                yi = int(round(y))
+                if yi < 0 or yi >= h:
+                    continue
+                x1 = int(round(float(x_pred) - float(half)))
+                x2 = int(round(float(x_pred) + float(half)))
+                cv2.line(frame, (max(0, x1), yi), (min(w - 1, x2), yi), color, 1, cv2.LINE_AA)
+                cv2.circle(frame, (int(round(float(x_pred))), yi), 2, color, -1, cv2.LINE_AA)
+
+        def draw_meas(pts, color):
+            if pts is None or len(pts) == 0:
+                return
+            for x, y in pts:
+                cv2.drawMarker(
+                    frame,
+                    (int(round(float(x))), int(round(float(y)))),
+                    color,
+                    cv2.MARKER_CROSS,
+                    8,
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        if show_ridge:
+            draw_bands(lanes.debug_left_bands, (255, 180, 80))
+            draw_bands(lanes.debug_right_bands, (80, 180, 255))
+            draw_meas(lanes.debug_left_meas, (0, 255, 255))
+            draw_meas(lanes.debug_right_meas, (255, 0, 255))
+            if lanes.left_poly_px is not None and len(lanes.left_poly_px) >= 2:
+                cv2.polylines(frame, [lanes.left_poly_px.astype(np.int32)], False, (0, 220, 255), 1, cv2.LINE_AA)
+            if lanes.right_poly_px is not None and len(lanes.right_poly_px) >= 2:
+                cv2.polylines(frame, [lanes.right_poly_px.astype(np.int32)], False, (255, 80, 255), 1, cv2.LINE_AA)
+
+        label = f"LANE DBG: {mode.upper()}"
+        cv2.putText(frame, label, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 255, 180), 1, cv2.LINE_AA)
 
     def _draw_drivable_path(self, frame: np.ndarray, lanes: LaneBoundaries):
         if lanes.drivable_polygon is not None and len(lanes.drivable_polygon) >= 6:

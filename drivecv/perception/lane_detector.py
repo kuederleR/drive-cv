@@ -9,6 +9,7 @@ import numpy as np
 from drivecv.config import LaneConfig
 from drivecv.perception.lane_fit import (
     SideKalman,
+    band_width_at_y,
     eval_quadratic,
     extract_host_lane_points,
     gate_points,
@@ -36,8 +37,9 @@ class ClassicalLaneDetector:
         self.config = config or LaneConfig()
         max_a = float(getattr(self.config, "max_poly_a", 48.0))
         max_jump = float(getattr(self.config, "max_jump_px", 28.0))
-        self.left = SideKalman(max_poly_a=max_a, max_jump_px=max_jump)
-        self.right = SideKalman(max_poly_a=max_a, max_jump_px=max_jump)
+        max_c = float(getattr(self.config, "max_bottom_step_px", 1.5))
+        self.left = SideKalman(max_poly_a=max_a, max_jump_px=max_jump, max_c_step=max_c)
+        self.right = SideKalman(max_poly_a=max_a, max_jump_px=max_jump, max_c_step=max_c)
         self.last_ll_mask: Optional[np.ndarray] = None
         self.last_da_mask: Optional[np.ndarray] = None
         self.type_detector = LaneTypeDetector()
@@ -159,21 +161,36 @@ class ClassicalLaneDetector:
                 y0=float(y_top),
                 pad=occlude_pad,
             )
+        debug_canny = np.zeros((h, w), dtype=np.uint8)
+        roi_h = max(1, y_bot - y_top)
+        debug_canny[y_top:y_bot, :] = cv2.resize(edges, (w, roi_h), interpolation=cv2.INTER_NEAREST)
 
         band = float(getattr(self.config, "search_band_px", 18.0))
+        band_bot = float(getattr(self.config, "search_band_bot_px", 52.0))
+        band_top = float(getattr(self.config, "search_band_top_px", 12.0))
         mask_gate = float(getattr(self.config, "mask_gate_px", 16.0))
+        band_pxs = np.array(
+            [band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) for y in y_samples],
+            dtype=np.float32,
+        )
         band_left = []
         band_right = []
+        debug_left_bands = None
+        debug_right_bands = None
         if self.left.x is not None:
             pred_xs = np.array([pred_left(y) or 0.0 for y in y_samples], dtype=np.float32)
             band_left = refine_lane_points(
-                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band, bgr=curr_bgr
+                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band_pxs,
+                bgr=curr_bgr, max_band_px=band_bot + 12.0,
             )
+            debug_left_bands = np.column_stack([pred_xs, y_samples, band_pxs])
         if self.right.x is not None:
             pred_xs = np.array([pred_right(y) or 0.0 for y in y_samples], dtype=np.float32)
             band_right = refine_lane_points(
-                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band, bgr=curr_bgr
+                curr_gray, edges, y_top, scale_w, y_samples, pred_xs, band_pxs,
+                bgr=curr_bgr, max_band_px=band_bot + 12.0,
             )
+            debug_right_bands = np.column_stack([pred_xs, y_samples, band_pxs])
 
         if self.left.valid:
             mask_left = gate_points(mask_left, pred_left, mask_gate)
@@ -213,9 +230,17 @@ class ClassicalLaneDetector:
                 right_pts.extend(h_right)
 
         if self.left.valid:
-            left_pts = gate_points(left_pts, pred_left, max(band, mask_gate))
+            left_pts = [
+                (x, y) for x, y in left_pts
+                if pred_left(y) is not None
+                and abs(x - pred_left(y)) <= band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) + 6.0
+            ]
         if self.right.valid:
-            right_pts = gate_points(right_pts, pred_right, max(band, mask_gate))
+            right_pts = [
+                (x, y) for x, y in right_pts
+                if pred_right(y) is not None
+                and abs(x - pred_right(y)) <= band_width_at_y(y, float(y_bot), float(y_top), band_bot, band_top) + 6.0
+            ]
 
         self.left.update_points(left_pts, float(y_bot), float(y_top), min_points=min_fit)
         self.right.update_points(right_pts, float(y_bot), float(y_top), min_points=min_fit)
@@ -248,7 +273,9 @@ class ClassicalLaneDetector:
         left_valid = self.left.valid
         right_valid = self.right.valid
         if not left_valid and not right_valid:
-            return self._empty(y_top, y_bot, w, da_mask, ll_mask)
+            empty = self._empty(y_top, y_bot, w, da_mask, ll_mask)
+            empty.debug_canny = debug_canny
+            return empty
 
         left_bot = self.left.eval_x(float(y_bot), float(y_bot), float(y_top)) if left_valid else None
         left_top = self.left.eval_x(float(y_top), float(y_bot), float(y_top)) if left_valid else None
@@ -402,4 +429,9 @@ class ClassicalLaneDetector:
             right_poly=right_poly,
             left_poly_px=left_poly_px,
             right_poly_px=right_poly_px,
+            debug_canny=debug_canny,
+            debug_left_meas=np.asarray(left_pts, dtype=np.float32) if left_pts else None,
+            debug_right_meas=np.asarray(right_pts, dtype=np.float32) if right_pts else None,
+            debug_left_bands=debug_left_bands,
+            debug_right_bands=debug_right_bands,
         )

@@ -563,11 +563,19 @@ class ADASPipeline:
                     if roi is not None:
                         self.tracker.add_manual_track(roi, latest_frame_data.gray_frame)
 
+            def _cycle_lane_debug():
+                modes = ["off", "canny", "ridge", "masks", "all"]
+                cur = str(getattr(self.config.visualizer, "lane_debug", "off") or "off")
+                nxt = modes[(modes.index(cur) + 1) % len(modes)] if cur in modes else "canny"
+                self.config.visualizer.lane_debug = nxt
+                print(f"[INFO] Lane debug view: {nxt}")
+
             keep_running = self.player.handle_keys(
                 frame_start_time=t_start_wall,
                 on_trigger_yolo=_trigger_yolo,
                 on_clear_tracks=_clear,
                 on_select_roi=_select_roi,
+                on_cycle_lane_debug=_cycle_lane_debug,
             )
             if not keep_running:
                 break

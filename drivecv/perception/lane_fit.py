@@ -68,7 +68,7 @@ def fit_quadratic(
     yn = (ys - float(y_bot)) / denom
     degree = 2 if xs.size >= 4 else 1
     # Near-field (bottom) anchors LDW; do not let noisy top rows lever the whole line.
-    w = np.square(1.0 - 0.72 * np.clip(yn, 0.0, 1.0))
+    w = np.square(1.0 - 0.40 * np.clip(yn, 0.0, 1.0))
     try:
         raw = np.polyfit(yn, xs, deg=degree, w=w)
     except (np.linalg.LinAlgError, ValueError):
@@ -294,6 +294,22 @@ def extract_host_lane_points(
     return left_pts, right_pts
 
 
+def band_width_at_y(
+    y: float,
+    y_bot: float,
+    y_top: float,
+    band_bot: float,
+    band_top: float,
+) -> float:
+    """Perspective search half-width: wide near the camera, tight near the horizon."""
+    denom = float(y_bot) - float(y_top)
+    if abs(denom) < 1e-3:
+        return float(band_bot)
+    t = (float(y) - float(y_top)) / denom
+    t = float(np.clip(t, 0.0, 1.0))
+    return float(band_top + t * (band_bot - band_top))
+
+
 def _subpixel_peak(vals: np.ndarray, i: int) -> float:
     if i <= 0 or i >= int(vals.size) - 1:
         return float(i)
@@ -311,51 +327,75 @@ def intensity_ridge_x(
     band_px: float,
     bgr: Optional[np.ndarray] = None,
     min_contrast: float = 16.0,
+    max_band_px: float = 64.0,
 ) -> Optional[float]:
     """
-    Sub-pixel paint center: 1-D intensity (and yellow) peak around x_pred.
-
-    Canny finds both edges of the marking; following the nearest edge walks
-    the track inward or outward. The ridge is the actual line center.
+    Paint-center x at row y. Expands the window if the bright run is clipped
+    (near-field markings are wider than a fixed band; a clipped run walks inward).
     """
     h, w = gray.shape[:2]
     yi = int(round(y))
     if yi < 0 or yi >= h:
         return None
     half = max(6, int(round(band_px)))
+    max_half = max(half, int(round(max_band_px)))
     xc = int(round(x_pred))
-    x1 = max(0, xc - half)
-    x2 = min(w, xc + half + 1)
-    if x2 - x1 < 7:
-        return None
-    row = gray[yi, x1:x2].astype(np.float32)
-    if bgr is not None and bgr.shape[0] == h and bgr.shape[1] == w and bgr.ndim == 3:
-        pix = bgr[yi, x1:x2].astype(np.float32)
-        yellow = np.maximum(0.0, 0.5 * (pix[:, 2] + pix[:, 1]) - pix[:, 0])
-        row = np.maximum(row, yellow)
-    if row.size >= 5:
-        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float32)
-        row = np.convolve(row, kernel / kernel.sum(), mode="same")
-    peak_i = int(np.argmax(row))
-    med = float(np.median(row))
-    contrast = float(row[peak_i] - med)
-    if contrast < min_contrast:
-        return None
-    if peak_i < 1 or peak_i > row.size - 2:
-        return None
-    # Midpoint of the bright run (paint center). argmax alone sticks to the
-    # left edge of a flat marking and walks the tracker inward/outward.
-    floor = med + 0.45 * contrast
-    left_i = peak_i
-    while left_i > 0 and row[left_i - 1] >= floor:
-        left_i -= 1
-    right_i = peak_i
-    while right_i < row.size - 1 and row[right_i + 1] >= floor:
-        right_i += 1
-    if right_i - left_i < 1:
-        return float(x1) + _subpixel_peak(row, peak_i)
-    center = 0.5 * (float(left_i) + float(right_i))
-    return float(x1) + center
+
+    def score_row(x1: int, x2: int) -> Optional[np.ndarray]:
+        if x2 - x1 < 7:
+            return None
+        row = gray[yi, x1:x2].astype(np.float32)
+        if bgr is not None and bgr.shape[0] == h and bgr.shape[1] == w and bgr.ndim == 3:
+            pix = bgr[yi, x1:x2].astype(np.float32)
+            yellow = np.maximum(0.0, 0.5 * (pix[:, 2] + pix[:, 1]) - pix[:, 0])
+            row = np.maximum(row, yellow)
+        if row.size >= 5:
+            kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=np.float32)
+            row = np.convolve(row, kernel / kernel.sum(), mode="same")
+        return row
+
+    x_meas: Optional[float] = None
+    for _ in range(5):
+        x1 = max(0, xc - half)
+        x2 = min(w, xc + half + 1)
+        row = score_row(x1, x2)
+        if row is None:
+            break
+        peak_i = int(np.argmax(row))
+        med = float(np.median(row))
+        contrast = float(row[peak_i] - med)
+        if contrast < min_contrast:
+            # Window is filled with paint (near-field yellow is wide) — expand to find edges.
+            if med >= 80.0 and half < max_half:
+                half = min(max_half, half + 14)
+                continue
+            if med >= 80.0:
+                return float(x_pred)
+            return None
+        floor = med + 0.45 * contrast
+        left_i = peak_i
+        while left_i > 0 and row[left_i - 1] >= floor:
+            left_i -= 1
+        right_i = peak_i
+        while right_i < row.size - 1 and row[right_i + 1] >= floor:
+            right_i += 1
+        hit_left = left_i == 0
+        hit_right = right_i == row.size - 1
+        if hit_left and hit_right:
+            # Whole window is paint — stay on the prediction instead of sliding.
+            return float(x_pred)
+        if hit_left or hit_right:
+            if half >= max_half:
+                x_meas = float(x1) + 0.5 * (float(left_i) + float(right_i))
+                break
+            half = min(max_half, half + 14)
+            continue
+        if right_i - left_i < 1:
+            x_meas = float(x1) + _subpixel_peak(row, peak_i)
+        else:
+            x_meas = float(x1) + 0.5 * (float(left_i) + float(right_i))
+        break
+    return x_meas
 
 
 def canny_paint_center(
@@ -400,21 +440,23 @@ def refine_lane_points(
     scale: float,
     y_samples: np.ndarray,
     pred_xs: np.ndarray,
-    band_px: float,
+    band_pxs: np.ndarray,
     bgr: Optional[np.ndarray] = None,
+    max_band_px: float = 64.0,
 ) -> List[Tuple[float, float]]:
     """Paint-center measurements per row: intensity ridge, else Canny edge-pair midpoint."""
     pts: List[Tuple[float, float]] = []
     if y_samples.size == 0:
         return pts
-    for y_img, px in zip(y_samples, pred_xs):
+    for y_img, px, band in zip(y_samples, pred_xs, band_pxs):
         yf = float(y_img)
         pred = float(px)
-        x_r = intensity_ridge_x(gray, yf, pred, band_px, bgr=bgr)
+        half = float(band)
+        x_r = intensity_ridge_x(gray, yf, pred, half, bgr=bgr, max_band_px=max_band_px)
         if x_r is not None:
             pts.append((x_r, yf))
             continue
-        x_c = canny_paint_center(edges, yf, pred, y_top, scale, band_px)
+        x_c = canny_paint_center(edges, yf, pred, y_top, scale, half)
         if x_c is not None:
             pts.append((x_c, yf))
     return pts
@@ -516,19 +558,22 @@ class SideKalman:
     CONF_HIT = 4.0
     CONF_MISS = 1.0
 
-    def __init__(self, max_poly_a: float = 48.0, max_jump_px: float = 28.0):
+    def __init__(self, max_poly_a: float = 48.0, max_jump_px: float = 28.0, max_c_step: float = 1.5):
         self.max_poly_a = float(max_poly_a)
         self.max_jump_px = float(max_jump_px)
+        self.max_c_step = float(max_c_step)
         self.x: Optional[np.ndarray] = None
         self.P = np.eye(3, dtype=np.float32) * 400.0
         self.confidence: float = 0.0
         self.acquired: bool = False
+        self.c_slow: Optional[float] = None
 
     def reset(self):
         self.x = None
         self.P = np.eye(3, dtype=np.float32) * 400.0
         self.confidence = 0.0
         self.acquired = False
+        self.c_slow = None
 
     def predict(self):
         if self.x is not None:
@@ -598,6 +643,12 @@ class SideKalman:
         self._kalman_update(meas, n_pts=len(pts))
         if self.x is not None:
             self.x = self._clamp_a(self.x)
+            c = float(self.x[2])
+            if self.c_slow is None:
+                self.c_slow = c
+            else:
+                self.c_slow += float(np.clip(c - self.c_slow, -self.max_c_step, self.max_c_step))
+            self.x[2] = np.float32(self.c_slow)
         self.confidence = min(self.CONF_MAX, self.confidence + self.CONF_HIT)
         self.acquired = True
         return True

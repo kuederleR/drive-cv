@@ -133,6 +133,11 @@ class LaneBoundaries:
     left_poly_m: Optional[np.ndarray] = None     # Nx2 ground [[x_m, z_m], ...]
     right_poly_m: Optional[np.ndarray] = None
     curvature_1pm: float = 0.0                   # centerline d^2x/dz^2 (1/m)
+    debug_canny: Optional[np.ndarray] = None     # full-frame Canny (uint8)
+    debug_left_meas: Optional[np.ndarray] = None  # Mx2 ridge measurements
+    debug_right_meas: Optional[np.ndarray] = None
+    debug_left_bands: Optional[np.ndarray] = None  # Kx3 [x_pred, y, half_w]
+    debug_right_bands: Optional[np.ndarray] = None
 
     @property
     def is_valid(self) -> bool:

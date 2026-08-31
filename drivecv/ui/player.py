@@ -54,6 +54,7 @@ class InteractivePlayer:
         on_trigger_yolo: Optional[Callable[[], None]] = None,
         on_clear_tracks: Optional[Callable[[], None]] = None,
         on_select_roi: Optional[Callable[[], None]] = None,
+        on_cycle_lane_debug: Optional[Callable[[], None]] = None,
     ) -> bool:
         """
         Handles keyboard input and regulates playback timing.
@@ -93,6 +94,9 @@ class InteractivePlayer:
         elif key == ord("d"):
             if self.is_paused:
                 self.step_single_frame = True
+        elif key == ord("l"):
+            if on_cycle_lane_debug:
+                on_cycle_lane_debug()
 
         return True
 
